@@ -76,6 +76,34 @@ const loadAccounts = (): Record<string, Account> => {
 const saveAccounts = (next: Record<string, Account>) =>
   localStorage.setItem("accounts", JSON.stringify(next));
 const accounts: Record<string, Account> = loadAccounts();
+const employeeFromApi = (e: any): Employee => ({
+  id: e.id,
+  name: e.name,
+  initials: e.name
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((x: string) => x[0])
+    .join(""),
+  department: e.department,
+  schedule: e.schedule || "График не назначен",
+  departmentId: Number(e.department_id),
+  scheduleId: Number(e.schedule_id),
+  scheduleCode: e.schedule_code,
+  scheduleKind: e.schedule_kind,
+  schedulePattern: e.cycle_pattern,
+  scheduleEffectiveFrom: e.schedule_effective_from?.slice(0, 10),
+  needsReview: e.needs_review,
+  reviewNote: e.review_note,
+  entry: e.entry || "—",
+  exit: e.exit || "—",
+  fact: Number(e.fact) || 0,
+  total: Number(e.total) || 0,
+  combo: Number(e.combo) || 0,
+  status: e.status || ("Требует проверки" as Status),
+  date: e.date,
+  recordCount: Number(e.recordCount) || 0,
+  issues: e.issues || ["Посещения за выбранную дату ещё не загружены"],
+});
 const roleName = {
   admin: "Администратор",
   observer: "Наблюдатель",
@@ -93,39 +121,17 @@ function App() {
   const [selected, setSelected] = useState<Employee | null>(null);
   const [menu, setMenu] = useState(false);
   useEffect(() => {
-    fetch("/api/employees")
-      .then((r) =>
+    Promise.all([
+      fetch("/api/employees").then((r) =>
         r.ok ? r.json() : Promise.reject(new Error("API недоступен")),
-      )
-      .then((rows) =>
-        setEmployees(
-          rows.map((e: any) => ({
-            id: e.id,
-            name: e.name,
-            initials: e.name
-              .split(/\s+/)
-              .slice(0, 2)
-              .map((x: string) => x[0])
-              .join(""),
-            department: e.department,
-            schedule: e.schedule || "График не назначен",
-            departmentId: Number(e.department_id),
-            scheduleId: Number(e.schedule_id),
-            scheduleCode: e.schedule_code,
-            scheduleKind: e.schedule_kind,
-            schedulePattern: e.cycle_pattern,
-            scheduleEffectiveFrom: e.schedule_effective_from?.slice(0, 10),
-            needsReview: e.needs_review,
-            reviewNote: e.review_note,
-            entry: "—",
-            exit: "—",
-            fact: 0,
-            total: 0,
-            combo: 0,
-            status: "Требует проверки" as Status,
-            issues: ["Посещения за выбранную дату ещё не загружены"],
-          })),
-        ),
+      ),
+      fetch("/api/skud-days?month=2026-07").then((r) => (r.ok ? r.json() : [])),
+    ])
+      .then(([employeeRows, skudRows]) =>
+        setEmployees([
+          ...employeeRows.map(employeeFromApi),
+          ...skudRows.map(employeeFromApi),
+        ]),
       )
       .catch(() => setEmployees([]));
   }, []);
@@ -291,7 +297,13 @@ function App() {
             />
           )}{" "}
           {page === "approval" && <Approval employees={employees} />}{" "}
-          {page === "import" && <SkudImport onImport={setEmployees} go={go} />}{" "}
+          {page === "import" && (
+            <SkudImport
+              onImport={setEmployees}
+              employees={employees}
+              go={go}
+            />
+          )}{" "}
           {page === "employees" && (
             <EmployeeDirectory
               employees={employees}
@@ -1335,15 +1347,18 @@ function Approval({ employees }: any) {
 }
 function SkudImport({
   onImport,
+  employees,
   go,
 }: {
   onImport: (e: Employee[]) => void;
+  employees: Employee[];
   go: any;
 }) {
   const [state, setState] = useState<{
     name?: string;
     rows?: Employee[];
     error?: string;
+    saving?: boolean;
   }>({});
   const load = async (file?: File) => {
     if (!file) return;
@@ -1412,12 +1427,35 @@ function SkudImport({
             </div>
             <button
               className="primary"
-              onClick={() => {
-                onImport(rows);
+              disabled={state.saving}
+              onClick={async () => {
+                setState({ ...state, saving: true, error: undefined });
+                const response = await fetch("/api/skud-days/import", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ rows }),
+                });
+                if (!response.ok) {
+                  const e = await response.json().catch(() => ({}));
+                  setState({
+                    ...state,
+                    saving: false,
+                    error: e.error || "Не удалось сохранить импорт",
+                  });
+                  return;
+                }
+                const baseRows = employees.filter((e) => !e.date);
+                const importedKeys = new Set(
+                  rows.map((e) => `${e.id}|${e.date}`),
+                );
+                const oldFacts = employees.filter(
+                  (e) => e.date && !importedKeys.has(`${e.id}|${e.date}`),
+                );
+                onImport([...baseRows, ...oldFacts, ...rows]);
                 go("timesheet");
               }}
             >
-              Применить импорт
+              {state.saving ? "Сохраняю..." : "Применить импорт"}
             </button>
           </div>
           {rows.slice(0, 8).map((e) => (

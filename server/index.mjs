@@ -65,6 +65,55 @@ app.get("/api/schedules", async (_q, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+app.get("/api/skud-days", async (req, res) => {
+  try {
+    const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+    await pool.query(
+      `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,
+    );
+    const { rows } = await pool.query(
+      `SELECT sd.employee_id id,e.full_name name,d.name department,s.schedule,s.schedule_id,s.schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,to_char(s.effective_from,'YYYY-MM-DD') schedule_effective_from,to_char(sd.work_date,'YYYY-MM-DD') date,COALESCE(to_char(sd.entry_time,'HH24:MI'),'—') entry,COALESCE(to_char(sd.end_time,'HH24:MI'),'—') exit,sd.fact_hours::float fact,sd.total_hours::float total,sd.combo_hours::float combo,sd.status,sd.record_count \"recordCount\",sd.issues FROM skud_days sd JOIN employees e ON e.id=sd.employee_id LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT es.effective_from,st.id schedule_id,st.name schedule,st.code schedule_code,st.schedule_kind,st.cycle_pattern,st.requires_anchor FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=sd.work_date AND(es.effective_to IS NULL OR es.effective_to>=sd.work_date)ORDER BY es.effective_from DESC LIMIT 1) s ON true WHERE sd.work_date>=($1 || '-01')::date AND sd.work_date<(($1 || '-01')::date + interval '1 month') ORDER BY d.name,e.full_name,sd.work_date`,
+      [month],
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.post("/api/skud-days/import", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    await client.query("BEGIN");
+    await client.query(
+      `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,
+    );
+    for (const row of rows) {
+      await client.query(
+        `INSERT INTO skud_days(employee_id,work_date,entry_time,end_time,fact_hours,total_hours,combo_hours,status,record_count,issues,source)VALUES($1,$2,NULLIF($3,'—')::time,NULLIF($4,'—')::time,$5,$6,$7,$8,$9,$10::jsonb,'skud_import')ON CONFLICT(employee_id,work_date)DO UPDATE SET entry_time=excluded.entry_time,end_time=excluded.end_time,fact_hours=excluded.fact_hours,total_hours=excluded.total_hours,combo_hours=excluded.combo_hours,status=excluded.status,record_count=excluded.record_count,issues=excluded.issues,source=excluded.source,imported_at=now()`,
+        [
+          row.id,
+          row.date,
+          row.entry || "—",
+          row.exit || "—",
+          Number(row.fact) || 0,
+          Number(row.total) || 0,
+          Number(row.combo) || 0,
+          row.status || "Требует проверки",
+          Number(row.recordCount) || 0,
+          JSON.stringify(row.issues || []),
+        ],
+      );
+    }
+    await client.query("COMMIT");
+    res.status(201).json({ ok: true, count: rows.length });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
 app.get("/api/schedule-overrides", async (req, res) => {
   try {
     const month = String(req.query.month || new Date().toISOString().slice(0, 7));
