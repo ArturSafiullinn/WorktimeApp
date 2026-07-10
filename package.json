@@ -1,0 +1,29 @@
+{
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "node --watch server/index.mjs",
+    "db:init": "node server/init-db.mjs",
+    "db:import-groups": "node server/import-groups.mjs",
+    "db:update-schedules": "node server/update-schedule-model.mjs",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "lucide-react": "latest",
+    "pg": "^8.22.0",
+    "react": "latest",
+    "react-dom": "latest",
+    "typescript": "latest",
+    "vite": "latest",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/react": "latest",
+    "@types/react-dom": "latest",
+    "tsx": "^4.23.0"
+  }
+}
