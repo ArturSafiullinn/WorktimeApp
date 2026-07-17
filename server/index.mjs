@@ -1,7 +1,11 @@
 import express from "express";
 import cors from "cors";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { pool } from "./db.mjs";
 const app = express();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const distDir = path.resolve(__dirname, "../dist");
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.get("/api/health", async (_q, res) => {
@@ -89,6 +93,19 @@ app.post("/api/skud-days/import", async (req, res) => {
       `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,
     );
     for (const row of rows) {
+      const dep = await client.query(
+        `INSERT INTO departments(name,active)VALUES($1,true)ON CONFLICT(name)DO UPDATE SET active=departments.active RETURNING id`,
+        [row.department || "Без подразделения"],
+      );
+      await client.query(
+        `INSERT INTO employees(id,full_name,department_id,active,needs_review,review_note)VALUES($1,$2,$3,true,true,$4)ON CONFLICT(id)DO NOTHING`,
+        [
+          row.id,
+          row.name || `Сотрудник #${row.id}`,
+          dep.rows[0].id,
+          "Сотрудник найден в импорте СКУД, но отсутствовал в базе сотрудников. Проверьте подразделение и график.",
+        ],
+      );
       await client.query(
         `INSERT INTO skud_days(employee_id,work_date,entry_time,end_time,fact_hours,total_hours,combo_hours,status,record_count,issues,source)VALUES($1,$2,NULLIF($3,'—')::time,NULLIF($4,'—')::time,$5,$6,$7,$8,$9,$10::jsonb,'skud_import')ON CONFLICT(employee_id,work_date)DO UPDATE SET entry_time=excluded.entry_time,end_time=excluded.end_time,fact_hours=excluded.fact_hours,total_hours=excluded.total_hours,combo_hours=excluded.combo_hours,status=excluded.status,record_count=excluded.record_count,issues=excluded.issues,source=excluded.source,imported_at=now()`,
         [
@@ -117,8 +134,26 @@ app.post("/api/skud-days/import", async (req, res) => {
 app.get("/api/schedule-overrides", async (req, res) => {
   try {
     const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+    await pool.query(
+      `ALTER TABLE schedule_overrides DROP CONSTRAINT IF EXISTS schedule_overrides_employee_id_work_date_key`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_id INTEGER REFERENCES employees(id)`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_name TEXT`,
+    );
     const { rows } = await pool.query(
-      `SELECT employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by FROM schedule_overrides WHERE work_date>=($1 || '-01')::date AND work_date<(($1 || '-01')::date + interval '1 month') ORDER BY work_date,employee_id`,
+      `SELECT id,employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by,leave_minutes,combo_hours::float combo_hours,overtime_hours::float overtime_hours,combo_employee_id,combo_employee_name,to_char(created_at,'YYYY-MM-DD HH24:MI') created_at FROM schedule_overrides WHERE work_date>=($1 || '-01')::date AND work_date<(($1 || '-01')::date + interval '1 month') ORDER BY work_date,employee_id,id`,
       [month],
     );
     res.json(rows);
@@ -136,11 +171,34 @@ app.post("/api/schedule-overrides", async (req, res) => {
       reason,
       comment,
       changed_by,
+      leave_minutes,
+      combo_hours,
+      overtime_hours,
+      combo_employee_id,
+      combo_employee_name,
     } = req.body;
     if (!employee_id || !work_date || !start_time || !end_time)
       return res.status(400).json({ error: "Не хватает данных корректировки" });
+    await pool.query(
+      `ALTER TABLE schedule_overrides DROP CONSTRAINT IF EXISTS schedule_overrides_employee_id_work_date_key`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_id INTEGER REFERENCES employees(id)`,
+    );
+    await pool.query(
+      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_name TEXT`,
+    );
     const { rows } = await pool.query(
-      `INSERT INTO schedule_overrides(employee_id,work_date,start_time,end_time,reason,comment,changed_by)VALUES($1,$2,$3,$4,$5,$6,$7)ON CONFLICT(employee_id,work_date)DO UPDATE SET start_time=excluded.start_time,end_time=excluded.end_time,reason=excluded.reason,comment=excluded.comment,changed_by=excluded.changed_by,created_at=now() RETURNING employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by`,
+      `INSERT INTO schedule_overrides(employee_id,work_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by,leave_minutes,combo_hours::float combo_hours,overtime_hours::float overtime_hours,combo_employee_id,combo_employee_name,to_char(created_at,'YYYY-MM-DD HH24:MI') created_at`,
       [
         employee_id,
         work_date,
@@ -149,9 +207,59 @@ app.post("/api/schedule-overrides", async (req, res) => {
         reason || "manual",
         comment || null,
         changed_by || "user",
+        Math.max(0, Number(leave_minutes) || 0),
+        Math.max(0, Number(combo_hours) || 0),
+        Math.max(0, Number(overtime_hours) || 0),
+        combo_employee_id || null,
+        combo_employee_name?.trim() || null,
       ],
     );
     res.status(201).json(rows[0]);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
+  try {
+    const {
+      employee_id,
+      reason,
+      start_time,
+      end_time,
+      comment,
+      changed_by,
+      from_date,
+    } = req.body;
+    if (!employee_id || !reason || !start_time || !end_time || !comment)
+      return res.status(400).json({ error: "Не хватает данных периода" });
+    const params = [
+      employee_id,
+      reason,
+      start_time,
+      end_time,
+      comment,
+      changed_by || null,
+      from_date || null,
+    ];
+    const { rowCount } = await pool.query(
+      `DELETE FROM schedule_overrides WHERE employee_id=$1 AND reason=$2 AND start_time=$3::time AND end_time=$4::time AND comment=$5 AND($6::text IS NULL OR changed_by=$6) AND($7::date IS NULL OR work_date>=$7::date)`,
+      params,
+    );
+    res.json({ ok: true, count: rowCount });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.delete("/api/schedule-overrides/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { changed_by } = req.body || {};
+    const { rows } = await pool.query(
+      `DELETE FROM schedule_overrides WHERE id=$1 AND($2::text IS NULL OR changed_by=$2) RETURNING id`,
+      [id, changed_by || null],
+    );
+    if (!rows.length) return res.status(404).json({ error: "Правка не найдена" });
+    res.json({ ok: true });
   } catch (e) {
     res.status(400).json({ error: e.message });
   }
@@ -221,6 +329,10 @@ app.patch("/api/departments/:id", async (req, res) => {
   } finally {
     client.release();
   }
+});
+app.use(express.static(distDir));
+app.get(/^(?!\/api).*/, (_req, res) => {
+  res.sendFile(path.join(distDir, "index.html"));
 });
 app.listen(Number(process.env.PORT || 3001), "0.0.0.0", () =>
   console.log(`WorkTime API: http://localhost:${process.env.PORT || 3001}`),

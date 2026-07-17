@@ -1,0 +1,32 @@
+services:
+  worktime-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-worktime_db}
+      POSTGRES_USER: ${POSTGRES_USER:-worktime_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: Europe/Samara
+    volumes:
+      - worktime_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-worktime_user} -d ${POSTGRES_DB:-worktime_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  worktime-app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      worktime-db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-worktime_user}:${POSTGRES_PASSWORD}@worktime-db:5432/${POSTGRES_DB:-worktime_db}
+      PORT: 3001
+      TZ: Europe/Samara
+    ports:
+      - "${APP_PORT:-3011}:3001"
+
+volumes:
+  worktime_pgdata:

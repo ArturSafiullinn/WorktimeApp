@@ -8,8 +8,11 @@ import {
   ChevronRight,
   Clock3,
   Download,
+  Eye,
+  EyeOff,
   FileCheck2,
   History,
+  KeyRound,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -59,16 +62,107 @@ type Employee = {
   reviewNote?: string;
 };
 const base: Employee[] = [];
-type Account = { pass: string; role: Role; name: string };
+type Account = {
+  pass: string;
+  role: Role;
+  name: string;
+  employeeIds?: number[];
+  departmentIds?: number[];
+};
 const defaultAccounts: Record<string, Account> = {
   admin: { pass: "admin", role: "admin", name: "Анна Викторовна" },
   observer: { pass: "observer", role: "observer", name: "Олег Сергеевич" },
   boss: { pass: "boss", role: "boss", name: "Михаил Петрович" },
+  boss_msp: {
+    pass: "boss_msp",
+    role: "boss",
+    name: "Начальник МСП",
+    employeeIds: [
+      120, 121, 122, 127, 191, 192, 193, 198, 200, 204, 206, 207, 211,
+      212, 213, 214, 215, 218, 232, 244, 276, 277, 298, 325, 332, 340,
+      343, 358, 363, 384, 398,
+    ],
+  },
+  boss_sklad: {
+    pass: "boss_sklad",
+    role: "boss",
+    name: "Начальник производственного склада",
+    employeeIds: [107, 108, 109, 111, 113, 157, 294, 339, 379, 380, 406],
+  },
+  boss_glav_sklad: {
+    pass: "boss_glav_sklad",
+    role: "boss",
+    name: "Начальник главного склада",
+    employeeIds: [129, 130, 133, 135, 337, 383],
+  },
+  boss_liteyka_press: {
+    pass: "boss_liteyka_press",
+    role: "boss",
+    name: "Начальник литейки и прессового",
+    employeeIds: [
+      161, 165, 167, 171, 172, 261, 265, 268, 269, 270, 271, 346, 368,
+      389, 403, 404, 407, 408,
+    ],
+  },
+  boss_otk: {
+    pass: "boss_otk",
+    role: "boss",
+    name: "Начальник ОТК",
+    employeeIds: [119, 333, 336],
+  },
+  boss_ohrana: {
+    pass: "boss_ohrana",
+    role: "boss",
+    name: "Начальник охраны",
+    employeeIds: [251, 252, 254, 255, 256, 257, 258, 259, 395],
+  },
+  boss_remont: {
+    pass: "boss_remont",
+    role: "boss",
+    name: "Начальник ремонтной службы",
+    employeeIds: [145, 156, 284, 326, 359],
+  },
+  boss_shih: {
+    pass: "boss_shih",
+    role: "boss",
+    name: "Начальник ШИХ",
+    employeeIds: [102, 143, 144, 146, 147, 149, 150, 151, 152, 154, 300],
+  },
+  boss_electro: {
+    pass: "boss_electro",
+    role: "boss",
+    name: "Начальник электроцеха",
+    employeeIds: [234, 235, 237, 238],
+  },
+  boss_termopak: {
+    pass: "boss_termopak",
+    role: "boss",
+    name: "Начальник термопака",
+    employeeIds: [295, 297, 319, 371],
+  },
 };
 const loadAccounts = (): Record<string, Account> => {
   try {
     const stored = localStorage.getItem("accounts");
-    return stored ? JSON.parse(stored) : { ...defaultAccounts };
+    if (!stored) return { ...defaultAccounts };
+    const parsed = JSON.parse(stored);
+    return {
+      ...defaultAccounts,
+      ...parsed,
+      ...Object.fromEntries(
+        Object.entries(defaultAccounts)
+          .filter(([login]) => login.startsWith("boss_"))
+          .map(([login, account]) => [
+            login,
+            {
+              ...account,
+              ...(parsed[login] || {}),
+              employeeIds:
+                account.employeeIds || parsed[login]?.employeeIds || [],
+            },
+          ]),
+      ),
+    };
   } catch {
     return { ...defaultAccounts };
   }
@@ -85,7 +179,7 @@ const employeeFromApi = (e: any): Employee => ({
     .map((x: string) => x[0])
     .join(""),
   department: e.department,
-  schedule: e.schedule || "График не назначен",
+  schedule: formatScheduleText(e.schedule || "График не назначен"),
   departmentId: Number(e.department_id),
   scheduleId: Number(e.schedule_id),
   scheduleCode: e.schedule_code,
@@ -94,8 +188,8 @@ const employeeFromApi = (e: any): Employee => ({
   scheduleEffectiveFrom: e.schedule_effective_from?.slice(0, 10),
   needsReview: e.needs_review,
   reviewNote: e.review_note,
-  entry: e.entry || "—",
-  exit: e.exit || "—",
+  entry: formatTime(e.entry || "—"),
+  exit: formatTime(e.exit || "—"),
   fact: Number(e.fact) || 0,
   total: Number(e.total) || 0,
   combo: Number(e.combo) || 0,
@@ -109,8 +203,39 @@ const roleName = {
   observer: "Наблюдатель",
   boss: "Начальник участка",
 };
+const correctionReasons = {
+  forgot_pass: "Забыл пропуск",
+  missing_entry: "Не приложил пропуск на входе",
+  missing_exit: "Не приложил пропуск на выходе",
+  temporary_leave: "Отлучался в течение дня",
+  schedule_change: "Другая смена",
+  substitution: "Выходил за другого сотрудника",
+  sick_leave: "Больничный",
+  vacation: "Отпуск",
+  other: "Другое",
+};
+type CorrectionReason = keyof typeof correctionReasons;
 const fmt = (n: number) =>
   n.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ч";
+const formatDate = (date?: string) => {
+  const match = String(date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : date || "";
+};
+const parseDisplayDate = (date: string) => {
+  const match = date.trim().match(/^(\d{2})[-.](\d{2})[-.](\d{4})$/);
+  return match ? `${match[3]}-${match[2]}-${match[1]}` : date;
+};
+const formatTime = (time?: string) => {
+  if (!time || time === "—") return time || "—";
+  const match = time.match(/^(\d{1,2}):(\d{2})/);
+  return match ? `${match[1].padStart(2, "0")}:${match[2]}` : time;
+};
+const formatRange = (start?: string, end?: string) =>
+  `${formatTime(start)}–${formatTime(end)}`;
+const formatScheduleText = (text?: string) =>
+  (text || "").replace(/\b(\d{1,2}):(\d{2})(?::\d{2})?\b/g, (_x, h, m) =>
+    `${String(h).padStart(2, "0")}:${m}`,
+  );
 function App() {
   const [role, setRole] = useState<Role | null>(
     () => localStorage.getItem("role") as Role,
@@ -120,6 +245,19 @@ function App() {
   const [employees, setEmployees] = useState<Employee[]>(base);
   const [selected, setSelected] = useState<Employee | null>(null);
   const [menu, setMenu] = useState(false);
+  const assignedIds = accounts[user]?.employeeIds;
+  const assignedDepartmentIds = accounts[user]?.departmentIds;
+  const hasBossScope =
+    role === "boss" &&
+    (Array.isArray(assignedIds) || Array.isArray(assignedDepartmentIds));
+  const scopedEmployees =
+    hasBossScope
+      ? employees.filter(
+          (e) =>
+            assignedIds?.includes(e.id) ||
+            assignedDepartmentIds?.includes(Number(e.departmentId)),
+        )
+      : employees;
   useEffect(() => {
     Promise.all([
       fetch("/api/employees").then((r) =>
@@ -153,7 +291,8 @@ function App() {
     scrollTo(0, 0);
   };
   const logout = () => {
-    localStorage.clear();
+    localStorage.removeItem("role");
+    localStorage.removeItem("user");
     setRole(null);
     setPage("dashboard");
   };
@@ -186,18 +325,26 @@ function App() {
             <Nav
               icon={<AlertTriangle />}
               label="Проблемы"
-              badge={String(employees.filter((e) => e.status !== "ОК").length)}
+              badge={String(scopedEmployees.filter((e) => e.status !== "ОК").length)}
               active={page === "problems"}
               onClick={() => go("problems")}
             />
           )}{" "}
           {role === "boss" && (
-            <Nav
-              icon={<FileCheck2 />}
-              label="Подтверждение"
-              active={page === "approval"}
-              onClick={() => go("approval")}
-            />
+            <>
+              <Nav
+                icon={<Users />}
+                label="Сотрудники"
+                active={page === "employees"}
+                onClick={() => go("employees")}
+              />
+              <Nav
+                icon={<FileCheck2 />}
+                label="Подтверждение"
+                active={page === "approval"}
+                onClick={() => go("approval")}
+              />
+            </>
           )}{" "}
           {role === "admin" && (
             <>
@@ -252,25 +399,35 @@ function App() {
           </button>
           <div>
             <b>{title(page)}</b>
-            <small>6 июля 2026, понедельник</small>
+            <small>06-07-2026, понедельник</small>
           </div>
           <div className="headerRight">
             <span className="sync">
               <i />
               СКУД синхронизирован
             </span>
-            <button className="avatar sm">{accounts[user]?.name?.[0]}</button>
+            <button className="avatar sm" onClick={() => go("account")}>
+              {accounts[user]?.name?.[0]}
+            </button>
           </div>
         </header>
         <section>
           {page === "dashboard" && (
-            <Dashboard role={role} go={go} employees={employees} />
+            <Dashboard role={role} go={go} employees={scopedEmployees} />
           )}{" "}
-          {page === "timesheet" && <Timesheet employees={employees} go={go} />}{" "}
-          {page === "problems" && <Problems employees={employees} go={go} />}{" "}
+          {page === "timesheet" && (
+            <Timesheet
+              employees={scopedEmployees}
+              go={go}
+              role={role}
+              user={user}
+            />
+          )}{" "}
+          {page === "problems" && <Problems employees={scopedEmployees} go={go} />}{" "}
           {page === "detail" && selected && (
             <Detail
               e={employees.find((x) => x.id === selected.id) || selected}
+              employees={scopedEmployees}
               role={role}
               go={go}
               update={(v) =>
@@ -290,13 +447,14 @@ function App() {
           {page === "combo" && selected && (
             <Combination
               e={selected}
+              employees={scopedEmployees}
               go={go}
               update={(v) =>
                 setEmployees(employees.map((x) => (x.id === v.id ? v : x)))
               }
             />
           )}{" "}
-          {page === "approval" && <Approval employees={employees} />}{" "}
+          {page === "approval" && <Approval employees={scopedEmployees} />}{" "}
           {page === "import" && (
             <SkudImport
               onImport={setEmployees}
@@ -305,12 +463,21 @@ function App() {
             />
           )}{" "}
           {page === "employees" && (
-            <EmployeeDirectory
-              employees={employees}
-              setEmployees={setEmployees}
-            />
+            role === "admin" ? (
+              <EmployeeDirectory
+                employees={employees}
+                setEmployees={setEmployees}
+              />
+            ) : (
+              <BossEmployeeCalendar
+                employees={scopedEmployees}
+                role={role}
+                user={user}
+              />
+            )
           )}
-          {page === "admin" && <Admin />}
+          {page === "admin" && <Admin employees={employees} />}
+          {page === "account" && <AccountSettings login={user} />}
           {page === "departments" && (
             <Departments employees={employees} setEmployees={setEmployees} />
           )}
@@ -322,6 +489,7 @@ function App() {
 function Login({ onLogin }: { onLogin: (u: string, r: Role) => void }) {
   const [u, setU] = useState("boss"),
     [p, setP] = useState("boss"),
+    [showPassword, setShowPassword] = useState(false),
     [err, setErr] = useState("");
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -370,12 +538,22 @@ function Login({ onLogin }: { onLogin: (u: string, r: Role) => void }) {
         </label>
         <label>
           Пароль
-          <input
-            type="password"
-            value={p}
-            onChange={(e) => setP(e.target.value)}
-            placeholder="Введите пароль"
-          />
+          <span className="passwordField">
+            <input
+              type={showPassword ? "text" : "password"}
+              value={p}
+              onChange={(e) => setP(e.target.value)}
+              placeholder="Введите пароль"
+            />
+            <button
+              type="button"
+              onClick={() => setShowPassword(!showPassword)}
+              aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"}
+              title={showPassword ? "Скрыть пароль" : "Показать пароль"}
+            >
+              {showPassword ? <EyeOff /> : <Eye />}
+            </button>
+          </span>
         </label>
         {err && <div className="error">{err}</div>}
         <button className="primary" type="submit">
@@ -393,9 +571,7 @@ function Login({ onLogin }: { onLogin: (u: string, r: Role) => void }) {
               key={x}
             >
               <span>{roleName[accounts[x].role as Role]}</span>
-              <code>
-                {x} / {x}
-              </code>
+              <code>{x}</code>
             </button>
           ))}
         </div>
@@ -443,8 +619,8 @@ function Dashboard({
         <div className="dateCard">
           <CalendarCheck />
           <div>
-            <b>Июль 2026</b>
-            <small>Табель открыт до 31 июля</small>
+            <b>07-2026</b>
+            <small>Табель открыт до 31-07-2026</small>
           </div>
         </div>
       </div>
@@ -509,7 +685,7 @@ function Dashboard({
           <Quick
             icon={<CalendarCheck />}
             title="Открыть табель"
-            text="Данные за 6 июля"
+            text="Данные за 06-07-2026"
             onClick={() => go("timesheet")}
           />
           <Quick
@@ -536,7 +712,8 @@ const PersonRow = ({ e, onClick }: { e: Employee; onClick: any }) => (
     <div>
       <b>{e.name}</b>
       <small>
-        {e.schedule} · {e.entry} → {e.exit}
+        {formatScheduleText(e.schedule)} · {formatTime(e.entry)} →{" "}
+        {formatTime(e.exit)}
       </small>
     </div>
     <Status s={e.status} />
@@ -568,11 +745,18 @@ type TimesheetCell = {
   start?: string;
   end?: string;
   hours: number;
+  baseHours: number;
+  comboHours: number;
+  overtimeHours: number;
+  leaveMinutes: number;
   status?: Status;
   planned?: boolean;
   override?: WorkOverride;
+  overrides?: WorkOverride[];
+  comboEmployeeName?: string;
 };
 type WorkOverride = {
+  id?: number;
   employee_id: number;
   work_date: string;
   start_time: string;
@@ -580,6 +764,12 @@ type WorkOverride = {
   reason: string;
   comment?: string;
   changed_by: string;
+  leave_minutes?: number;
+  combo_hours?: number;
+  overtime_hours?: number;
+  combo_employee_id?: number;
+  combo_employee_name?: string;
+  created_at?: string;
 };
 const monthStart = "2026-07-01";
 const monthDays = Array.from({ length: 31 }, (_, i) => {
@@ -595,42 +785,99 @@ const monthDays = Array.from({ length: 31 }, (_, i) => {
 });
 const dayDiff = (from: string, to: string) =>
   Math.floor((Date.parse(to) - Date.parse(from)) / 86400000);
+const localDateString = (date = new Date()) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const addDays = (date: string, days: number) => {
+  const [year, month, day] = date.split("-").map(Number);
+  const d = new Date(year, month - 1, day + days);
+  return localDateString(d);
+};
+const datesBetween = (from: string, to: string) => {
+  const days = Math.max(0, dayDiff(from, to));
+  return Array.from({ length: days + 1 }, (_, i) => addDays(from, i));
+};
 const timeMinutes = (time: string) => {
+  if (!/^\d{1,2}:\d{2}$/.test(time)) return Number.NaN;
   const [h, m] = time.split(":").map(Number);
   return h * 60 + m;
 };
 const durationHours = (start: string, end: string) => {
   let diff = timeMinutes(end) - timeMinutes(start);
+  if (Number.isNaN(diff)) return 0;
   if (diff < 0) diff += 24 * 60;
   return Math.round((diff / 60) * 100) / 100;
 };
+const roundHours = (hours: number) => Math.round(hours * 100) / 100;
+const isRegularSchedule = (e: Employee) =>
+  e.scheduleCode === "standard" ||
+  e.scheduleKind === "weekly" ||
+  /08:00.*17:00|09:00.*18:00/.test(formatScheduleText(e.schedule));
+const lunchHoursFor = (e: Employee, rawHours: number) =>
+  isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
+const plannedPaidHoursFor = (e: Employee) => (isRegularSchedule(e) ? 8 : null);
+const payableManualHours = (
+  e: Employee,
+  start: string,
+  end: string,
+  leaveMinutes = 0,
+) => {
+  const rawHours = durationHours(start, end);
+  const workedHours = Math.max(
+    0,
+    rawHours - lunchHoursFor(e, rawHours) - leaveMinutes / 60,
+  );
+  const plannedHours = plannedPaidHoursFor(e);
+  return roundHours(plannedHours == null ? workedHours : Math.min(workedHours, plannedHours));
+};
+const suggestedOvertimeHours = (
+  e: Employee,
+  start: string,
+  end: string,
+  leaveMinutes = 0,
+) => {
+  const rawHours = durationHours(start, end);
+  const workedHours = Math.max(
+    0,
+    rawHours - lunchHoursFor(e, rawHours) - leaveMinutes / 60,
+  );
+  const plannedHours = plannedPaidHoursFor(e);
+  if (plannedHours == null) return 0;
+  return Math.max(
+    0,
+    roundHours(workedHours - plannedHours),
+  );
+};
+const blankCellHours = { hours: 0, baseHours: 0, comboHours: 0, overtimeHours: 0, leaveMinutes: 0 };
+const compactHours = (hours: number) => hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+const normalizeTimeInput = (value: string) =>
+  value.replace(/[^\d:]/g, "").slice(0, 5);
 function plannedCellFor(
   e: Employee,
   d: (typeof monthDays)[number],
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
   if (e.needsReview && e.reviewNote?.toLowerCase().includes("отпуск"))
-    return { ...base, label: "ОТ", kind: "vacation", hours: 0 };
+    return { ...base, label: "ОТ", kind: "vacation", ...blankCellHours };
   if (e.needsReview && !e.scheduleCode)
-    return { ...base, label: "?", kind: "review", hours: 0 };
+    return { ...base, label: "?", kind: "review", ...blankCellHours };
   if (!e.scheduleCode)
-    return { ...base, label: "", kind: "unknown", hours: 0 };
+    return { ...base, label: "", kind: "unknown", ...blankCellHours };
   if (e.scheduleCode === "standard" || e.scheduleKind === "weekly") {
     const wd = new Date(d.date).getDay();
     if (wd === 0 || wd === 6)
-      return { ...base, label: "В", kind: "off", hours: 0 };
+      return { ...base, label: "В", kind: "off", ...blankCellHours };
     return {
       ...base,
       label: "пл",
       kind: "planned",
       start: "08:00",
       end: "17:00",
-      hours: 0,
+      ...blankCellHours,
       planned: true,
     };
   }
   if (e.scheduleCode === "tpa_setup_monthly")
-    return { ...base, label: "таб.", kind: "review", hours: 0 };
+    return { ...base, label: "таб.", kind: "review", ...blankCellHours };
   const pattern = Array.isArray(e.schedulePattern) ? e.schedulePattern : [];
   if (e.scheduleKind === "cycle" && pattern.length && e.scheduleEffectiveFrom) {
     const index =
@@ -639,67 +886,135 @@ function plannedCellFor(
         pattern.length,
       item = pattern[index];
     if (!item || item.type === "off")
-      return { ...base, label: "В", kind: "off", hours: 0 };
+      return { ...base, label: "В", kind: "off", ...blankCellHours };
     const start = item.start || "08:00",
-      end = item.end || "17:00",
-      hours =
-        item.type === "24h"
-          ? 24
-          : e.scheduleCode === "foundry_2x2"
-            ? item.type === "night"
-              ? 15
-              : 9
-            : 12;
+      end = item.end || "17:00";
     return {
       ...base,
       label: "пл",
       kind: "planned",
       start,
       end,
-      hours: 0,
+      ...blankCellHours,
       planned: true,
     };
   }
-  return { ...base, label: "?", kind: "review", hours: 0 };
+  return { ...base, label: "?", kind: "review", ...blankCellHours };
 }
 function cellFor(
   e: Employee,
   d: (typeof monthDays)[number],
   fact?: Employee,
-  override?: WorkOverride,
+  overrides: WorkOverride[] = [],
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
-  if (override) {
-    const hours = durationHours(override.start_time, override.end_time);
-    return {
-      ...base,
-      label: `${hours.toLocaleString("ru-RU")}ч`,
-      kind: "fact",
-      start: override.start_time,
-      end: override.end_time,
-      hours,
-      status: "Ручная корректировка",
-      override,
-    };
-  }
-  if (fact) {
-    const hours = fact.total || fact.fact || 0;
+  const sortedOverrides = [...overrides].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
+  const timeReasons = new Set([
+    "forgot_pass",
+    "missing_entry",
+    "missing_exit",
+    "schedule_change",
+    "other",
+  ]);
+  const timeOverride = [...sortedOverrides]
+    .reverse()
+    .find((row) => timeReasons.has(row.reason));
+  const absenceOverride = [...sortedOverrides]
+    .reverse()
+    .find((row) => row.reason === "sick_leave" || row.reason === "vacation");
+  const absenceActive =
+    !!absenceOverride &&
+    (!timeOverride || Number(timeOverride.id || 0) < Number(absenceOverride.id || 0));
+  if (fact || sortedOverrides.length) {
+    const baseHours = fact?.fact || 0;
+    const planned = plannedCellFor(e, d);
+    const start = absenceActive
+      ? "00:00"
+      : timeOverride?.start_time ||
+      (fact?.entry && fact.entry !== "—" ? fact.entry : planned.start || "08:00");
+    const end = absenceActive
+      ? "00:00"
+      : timeOverride?.end_time ||
+      (fact?.exit && fact.exit !== "—" ? fact.exit : planned.end || "17:00");
+    const leaveMinutes = sortedOverrides.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.leave_minutes) || 0),
+      0,
+    );
+    const overrideComboHours = sortedOverrides.reduce(
+      (sum, row) => sum + Math.max(0, Number(row.combo_hours) || 0),
+      0,
+    );
+    const overtimeHours = absenceActive
+      ? 0
+      : sortedOverrides.reduce(
+          (sum, row) => sum + Math.max(0, Number(row.overtime_hours) || 0),
+          0,
+        );
+    const comboHours = absenceActive ? 0 : (fact?.combo || 0) + overrideComboHours;
+    const manualBaseHours = absenceActive
+      ? 0
+      : sortedOverrides.length
+      ? payableManualHours(e, start, end, leaveMinutes)
+      : baseHours;
+    const hours = roundHours(manualBaseHours + overtimeHours + comboHours);
     const bad = ["Нет входа", "Нет выхода", "Требует проверки"].includes(
-      fact.status,
+      fact?.status || "",
+    );
+    const relatedNames = Array.from(
+      new Set(
+        sortedOverrides
+          .map((row) => row.combo_employee_name)
+          .filter(Boolean) as string[],
+      ),
     );
     return {
       ...base,
-      label: bad ? "!" : hours ? `${hours.toLocaleString("ru-RU")}ч` : "0",
-      kind: bad ? "review" : "fact",
-      start: fact.entry,
-      end: fact.exit,
+      label: bad && !sortedOverrides.length
+        ? "!"
+        : absenceActive
+          ? absenceOverride?.reason === "sick_leave"
+            ? "Б"
+            : "ОТ"
+        : comboHours || overtimeHours
+          ? `${compactHours(manualBaseHours)}+${compactHours(overtimeHours + comboHours)}`
+          : hours
+            ? `${compactHours(hours)}ч`
+            : "0",
+      kind: absenceActive
+        ? absenceOverride?.reason === "vacation"
+          ? "vacation"
+          : "review"
+        : bad && !sortedOverrides.length
+          ? "review"
+          : "fact",
+      start,
+      end,
       hours,
-      status: fact.status,
+      baseHours: manualBaseHours,
+      comboHours,
+      overtimeHours,
+      leaveMinutes,
+      status: sortedOverrides.length
+        ? "Ручная корректировка"
+        : fact?.status || "Требует проверки",
+      override: sortedOverrides[sortedOverrides.length - 1],
+      overrides: sortedOverrides,
+      comboEmployeeName: relatedNames.join(", "),
     };
   }
   return plannedCellFor(e, d);
 }
-function Timesheet({ employees, go }: { employees: Employee[]; go: any }) {
+function Timesheet({
+  employees,
+  go,
+  role,
+  user,
+}: {
+  employees: Employee[];
+  go: any;
+  role: Role;
+  user: string;
+}) {
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("all");
   const [overrides, setOverrides] = useState<WorkOverride[]>([]);
@@ -726,12 +1041,13 @@ function Timesheet({ employees, go }: { employees: Employee[]; go: any }) {
     return map;
   }, new Map<string, Employee>());
   const overrideMap = overrides.reduce((map, row) => {
-    map.set(`${row.employee_id}|${row.work_date}`, row);
+    const key = `${row.employee_id}|${row.work_date}`;
+    map.set(key, [...(map.get(key) || []), row]);
     return map;
-  }, new Map<string, WorkOverride>());
+  }, new Map<string, WorkOverride[]>());
   const factFor = (e: Employee, date: string) => facts.get(`${e.id}|${date}`);
   const overrideFor = (e: Employee, date: string) =>
-    overrideMap.get(`${e.id}|${date}`);
+    overrideMap.get(`${e.id}|${date}`) || [];
   const departments = Array.from(
     new Set(roster.map((e) => e.department || "Без подразделения")),
   ).sort((a, b) => a.localeCompare(b, "ru"));
@@ -868,7 +1184,7 @@ function Timesheet({ employees, go }: { employees: Employee[]; go: any }) {
                     <span className="avatar sm">{e.initials}</span>
                     <span>
                       <b>{e.name}</b>
-                      <small>{e.schedule}</small>
+                      <small>{formatScheduleText(e.schedule)}</small>
                     </span>
                   </button>
                   {monthDays.map((d) => {
@@ -883,7 +1199,7 @@ function Timesheet({ employees, go }: { employees: Employee[]; go: any }) {
                         className={`monthCell ${cell.kind} ${cell.label === "Н" ? "night" : ""} ${cell.label === "24" ? "full" : ""}`}
                         key={d.date}
                         onClick={() => setOpened({ employee: e, cell })}
-                        title={`${e.name}, ${cell.date}`}
+                        title={`${e.name}, ${formatDate(cell.date)}`}
                       >
                         {cell.label}
                       </button>
@@ -897,80 +1213,495 @@ function Timesheet({ employees, go }: { employees: Employee[]; go: any }) {
         ))}
       </div>
       {opened && (
-        <div className="cellModalShade" onClick={() => setOpened(null)}>
-          <div className="cellModal panel" onClick={(e) => e.stopPropagation()}>
-            <button className="closeModal" onClick={() => setOpened(null)}>
-              <X />
-            </button>
-            <span className="eyebrow">ЯЧЕЙКА ТАБЕЛЯ</span>
-            <h2>{opened.employee.name}</h2>
-            <p>
-              {opened.cell.date} · {opened.employee.department}
-            </p>
-            <div className="cellFacts">
-              <div>
-                <span>График</span>
-                <b>{opened.employee.schedule}</b>
-              </div>
-              <div>
-                <span>Смена</span>
-                <b>
-                  {opened.cell.kind === "fact"
-                    ? `${opened.cell.start}–${opened.cell.end}`
-                    : opened.cell.kind === "planned"
-                    ? `${opened.cell.start}–${opened.cell.end}`
-                    : opened.cell.kind === "vacation"
-                      ? "Отпуск"
-                      : opened.cell.kind === "off"
-                        ? "Выходной"
-                        : "Требует проверки"}
-                </b>
-              </div>
-              <div>
-                <span>Часы</span>
-                <b>{fmt(opened.cell.hours)}</b>
-              </div>
-              {opened.cell.status && (
-                <div>
-                  <span>Статус</span>
-                  <b>{opened.cell.status}</b>
-                </div>
-              )}
-            </div>
-            {opened.employee.reviewNote && (
-              <div className="notice compact">
-                <AlertTriangle />
-                <div>
-                  <b>Пометка</b>
-                  <p>{opened.employee.reviewNote}</p>
-                </div>
-              </div>
-            )}
-            {opened.cell.override && (
-              <div className="notice compact">
-                <AlertTriangle />
-                <div>
-                  <b>Ручная корректировка</b>
-                  <p>
-                    {opened.cell.override.comment || "Изменено вручную"} ·{" "}
-                    {opened.cell.override.changed_by}
-                  </p>
-                </div>
-              </div>
-            )}
-            <button
-              className="primary"
-              onClick={() => {
-                setOpened(null);
-                go("detail", opened.employee);
-              }}
-            >
-              Открыть карточку сотрудника
-            </button>
-          </div>
-        </div>
+        <TimesheetCellModal
+          opened={opened}
+          role={role}
+          user={user}
+          roster={roster}
+          onClose={() => setOpened(null)}
+          onOpenDetail={() => {
+            setOpened(null);
+            go("detail", opened.employee);
+          }}
+          onSave={(row) => {
+            const nextOverrides = [...overrides, row];
+            setOverrides(nextOverrides);
+            const day = monthDays.find((d) => d.date === row.work_date);
+            if (day)
+              setOpened({
+                employee: opened.employee,
+                cell: cellFor(
+                  opened.employee,
+                  day,
+                  factFor(opened.employee, row.work_date),
+                  nextOverrides.filter(
+                    (item) =>
+                      item.employee_id === row.employee_id &&
+                      item.work_date === row.work_date,
+                  ),
+                ),
+              });
+          }}
+          onDelete={(row) => {
+            const nextOverrides = overrides.filter((item) => item.id !== row.id);
+            setOverrides(nextOverrides);
+            const day = monthDays.find((d) => d.date === row.work_date);
+            if (day)
+              setOpened({
+                employee: opened.employee,
+                cell: cellFor(
+                  opened.employee,
+                  day,
+                  factFor(opened.employee, row.work_date),
+                  nextOverrides.filter(
+                    (item) =>
+                      item.employee_id === row.employee_id &&
+                      item.work_date === row.work_date,
+                  ),
+                ),
+              });
+          }}
+        />
       )}
     </>
+  );
+}
+function TimesheetCellModal({
+  opened,
+  role,
+  user,
+  roster,
+  onClose,
+  onOpenDetail,
+  onSave,
+  onDelete,
+}: {
+  opened: { employee: Employee; cell: TimesheetCell };
+  role: Role;
+  user: string;
+  roster: Employee[];
+  onClose: () => void;
+  onOpenDetail: () => void;
+  onSave: (row: WorkOverride) => void;
+  onDelete: (row: WorkOverride) => void;
+}) {
+  const canEdit = role !== "observer";
+  const actorName = accounts[user]?.name || user || role;
+  const cellOverrides = opened.cell.overrides || [];
+  const initialStart =
+    opened.cell.start && opened.cell.start !== "—"
+      ? opened.cell.start
+      : opened.employee.entry !== "—"
+        ? opened.employee.entry
+        : "08:00";
+  const initialEnd =
+    opened.cell.end && opened.cell.end !== "—"
+      ? opened.cell.end
+      : opened.employee.exit !== "—"
+        ? opened.employee.exit
+        : "17:00";
+  const [edit, setEdit] = useState({
+    start: opened.cell.override?.start_time || initialStart,
+    end: opened.cell.override?.end_time || initialEnd,
+    reason:
+      (opened.cell.override?.reason as CorrectionReason) ||
+      (opened.cell.status === "Нет входа"
+        ? "missing_entry"
+        : opened.cell.status === "Нет выхода"
+          ? "missing_exit"
+          : "forgot_pass"),
+    leaveMinutes: String(opened.cell.override?.leave_minutes || 0),
+    comboHours: String(opened.cell.override?.combo_hours || 0),
+    overtimeHours: String(opened.cell.override?.overtime_hours || 0),
+    comboEmployeeId: String(opened.cell.override?.combo_employee_id || ""),
+    comboEmployeeName: opened.cell.override?.combo_employee_name || "",
+    comment: opened.cell.override?.comment || "",
+  });
+  const comboEmployee = roster.find((e) => String(e.id) === edit.comboEmployeeId);
+  const comboEmployeeName = comboEmployee?.name || edit.comboEmployeeName.trim();
+  const leaveMinutes = Math.max(0, Number(edit.leaveMinutes) || 0);
+  const comboHours = Math.max(0, Number(edit.comboHours) || 0);
+  const overtimeHours = Math.max(0, Number(edit.overtimeHours) || 0);
+  const suggestedOvertime = suggestedOvertimeHours(
+    opened.employee,
+    edit.start,
+    edit.end,
+    leaveMinutes,
+  );
+  const baseHours = payableManualHours(
+    opened.employee,
+    edit.start,
+    edit.end,
+    leaveMinutes,
+  );
+  const isAbsenceReason = ["sick_leave", "vacation"].includes(edit.reason);
+  const previewBaseHours = isAbsenceReason ? 0 : baseHours;
+  const previewOvertimeHours = isAbsenceReason ? 0 : overtimeHours;
+  const previewComboHours = isAbsenceReason ? 0 : comboHours;
+  const totalHours = roundHours(
+    previewBaseHours + previewOvertimeHours + previewComboHours,
+  );
+  const needsOnlyEntry =
+    !isAbsenceReason &&
+    (edit.reason === "missing_entry" || opened.cell.status === "Нет входа");
+  const needsOnlyExit =
+    !isAbsenceReason &&
+    (edit.reason === "missing_exit" || opened.cell.status === "Нет выхода");
+  const showStartInput = !isAbsenceReason && !needsOnlyExit;
+  const showEndInput = !isAbsenceReason && !needsOnlyEntry;
+  const needsRelatedEmployee =
+    !isAbsenceReason && (comboHours > 0 || edit.reason === "substitution");
+  const save = async () => {
+    const payload = {
+      employee_id: opened.employee.id,
+      work_date: opened.cell.date,
+      start_time: isAbsenceReason ? "00:00" : edit.start,
+      end_time: isAbsenceReason ? "00:00" : edit.end,
+      reason: edit.reason,
+      comment: edit.comment,
+      changed_by: actorName,
+      leave_minutes: isAbsenceReason ? 0 : leaveMinutes,
+      combo_hours: isAbsenceReason ? 0 : comboHours,
+      overtime_hours: isAbsenceReason ? 0 : overtimeHours,
+      combo_employee_id: isAbsenceReason
+        ? null
+        : comboEmployee
+          ? comboEmployee.id
+          : null,
+      combo_employee_name: isAbsenceReason ? "" : comboEmployeeName,
+    };
+    const response = await fetch("/api/schedule-overrides", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) return;
+    onSave(await response.json());
+  };
+  const remove = async (row: WorkOverride) => {
+    if (!row.id) return;
+    const response = await fetch(`/api/schedule-overrides/${row.id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        changed_by: role === "admin" ? null : actorName,
+      }),
+    });
+    if (response.ok) onDelete(row);
+  };
+  return (
+    <div className="cellModalShade" onClick={onClose}>
+      <div className="cellModal panel" onClick={(e) => e.stopPropagation()}>
+        <button className="closeModal" onClick={onClose}>
+          <X />
+        </button>
+        <span className="eyebrow">ЯЧЕЙКА ТАБЕЛЯ</span>
+        <h2>{opened.employee.name}</h2>
+        <p>
+          {formatDate(opened.cell.date)} · {opened.employee.department}
+        </p>
+        <div className="cellFacts">
+          <div>
+            <span>График</span>
+            <b>{formatScheduleText(opened.employee.schedule)}</b>
+          </div>
+          <div>
+            <span>Смена</span>
+            <b>
+              {opened.cell.kind === "fact" || opened.cell.kind === "planned"
+                ? formatRange(opened.cell.start, opened.cell.end)
+                : opened.cell.kind === "vacation"
+                  ? "Отпуск"
+                  : opened.cell.kind === "off"
+                    ? "Выходной"
+                    : "Требует проверки"}
+            </b>
+          </div>
+          <div>
+            <span>Основное время</span>
+            <b>{fmt(opened.cell.baseHours)}</b>
+          </div>
+          {opened.cell.leaveMinutes > 0 && (
+            <div>
+              <span>Отлучка</span>
+              <b>{opened.cell.leaveMinutes} мин</b>
+            </div>
+          )}
+          {opened.cell.overtimeHours > 0 && (
+            <div>
+              <span>Переработка</span>
+              <b>+ {fmt(opened.cell.overtimeHours)}</b>
+            </div>
+          )}
+          {(opened.cell.comboHours > 0 || opened.cell.comboEmployeeName) && (
+            <div>
+              <span>
+                {opened.cell.comboHours > 0 ? "Совмещение" : "За сотрудника"}
+              </span>
+              <b>
+                {opened.cell.comboHours > 0 ? `+ ${fmt(opened.cell.comboHours)}` : ""}
+                {opened.cell.comboEmployeeName
+                  ? `${opened.cell.comboHours > 0 ? " · " : ""}${opened.cell.comboEmployeeName}`
+                  : ""}
+              </b>
+            </div>
+          )}
+          <div>
+            <span>Итого</span>
+            <b>{fmt(opened.cell.hours)}</b>
+          </div>
+          {opened.cell.status && (
+            <div>
+              <span>Статус</span>
+              <b>{opened.cell.status}</b>
+            </div>
+          )}
+        </div>
+        {opened.employee.reviewNote && (
+          <div className="notice compact">
+            <AlertTriangle />
+            <div>
+              <b>Пометка</b>
+              <p>{opened.employee.reviewNote}</p>
+            </div>
+          </div>
+        )}
+        {cellOverrides.length > 0 && (
+          <div className="cellCorrections">
+            <h3>Внесённые правки</h3>
+            {cellOverrides.map((row) => {
+              const canDelete = role === "admin" || row.changed_by === actorName;
+              return (
+                <div className="correctionItem" key={row.id || `${row.reason}-${row.created_at}`}>
+                  <div>
+                    <b>
+                      {correctionReasons[row.reason as CorrectionReason] ||
+                        "Изменено вручную"}
+                    </b>
+                    <small>
+                      {formatRange(row.start_time, row.end_time)}
+                      {Number(row.leave_minutes) > 0
+                        ? ` · отлучка ${row.leave_minutes} мин`
+                        : ""}
+                      {Number(row.combo_hours) > 0
+                        ? ` · совмещение ${fmt(Number(row.combo_hours))}`
+                        : ""}
+                      {Number(row.overtime_hours) > 0
+                        ? ` · переработка ${fmt(Number(row.overtime_hours))}`
+                        : ""}
+                      {row.combo_employee_name
+                        ? ` · ${row.combo_employee_name}`
+                        : ""}
+                      {row.comment ? ` · ${row.comment}` : ""} ·{" "}
+                      {row.changed_by}
+                    </small>
+                  </div>
+                  {canDelete && (
+                    <button className="danger mini" onClick={() => remove(row)}>
+                      Удалить
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+        {canEdit && (
+          <div className="cellEdit">
+            <h3>Внести правку</h3>
+            <label>
+              Причина
+              <select
+                value={edit.reason}
+                onChange={(event) =>
+                  setEdit({
+                    ...edit,
+                    reason: event.target.value as CorrectionReason,
+                  })
+                }
+              >
+                {Object.entries(correctionReasons).map(([key, label]) => (
+                  <option key={key} value={key}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {!isAbsenceReason && (
+            <div className="fieldRow">
+              {showStartInput && (
+                <label>
+                  Вход
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="HH:mm"
+                    pattern="[0-2][0-9]:[0-5][0-9]"
+                    value={edit.start}
+                    onChange={(event) =>
+                      setEdit({
+                        ...edit,
+                        start: normalizeTimeInput(event.target.value),
+                      })
+                    }
+                    onBlur={() =>
+                      setEdit({ ...edit, start: formatTime(edit.start) })
+                    }
+                  />
+                </label>
+              )}
+              {showEndInput && (
+                <label>
+                  Выход
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="HH:mm"
+                    pattern="[0-2][0-9]:[0-5][0-9]"
+                    value={edit.end}
+                    onChange={(event) =>
+                      setEdit({
+                        ...edit,
+                        end: normalizeTimeInput(event.target.value),
+                      })
+                    }
+                    onBlur={() =>
+                      setEdit({ ...edit, end: formatTime(edit.end) })
+                    }
+                  />
+                </label>
+              )}
+            </div>
+            )}
+            {!isAbsenceReason && (
+            <div className="fieldRow">
+              <label>
+                Отлучка, минут
+                <input
+                  min="0"
+                  step="5"
+                  type="number"
+                  value={edit.leaveMinutes}
+                  onChange={(event) =>
+                    setEdit({ ...edit, leaveMinutes: event.target.value })
+                  }
+                />
+              </label>
+              <label>
+                Совмещение, часов
+                <input
+                  min="0"
+                  step="0.5"
+                  type="number"
+                  value={edit.comboHours}
+                  onChange={(event) =>
+                    setEdit({ ...edit, comboHours: event.target.value })
+                  }
+                />
+              </label>
+            </div>
+            )}
+            {!isAbsenceReason && (
+            <div className="fieldRow">
+              <label>
+                Переработка, часов
+                <input
+                  min="0"
+                  step="0.5"
+                  type="number"
+                  value={edit.overtimeHours}
+                  onChange={(event) =>
+                    setEdit({ ...edit, overtimeHours: event.target.value })
+                  }
+                />
+              </label>
+              {suggestedOvertime > 0.5 && (
+                <label>
+                  Видно сверх графика
+                  <button
+                    className="outline"
+                    onClick={() =>
+                      setEdit({
+                        ...edit,
+                        overtimeHours: String(suggestedOvertime),
+                      })
+                    }
+                  >
+                    Утвердить {fmt(suggestedOvertime)}
+                  </button>
+                </label>
+              )}
+            </div>
+            )}
+            {needsRelatedEmployee && (
+              <label>
+                {edit.reason === "substitution"
+                  ? "За какого сотрудника вышел"
+                  : "Кого совмещал"}
+                <select
+                  value={edit.comboEmployeeId}
+                  onChange={(event) =>
+                    setEdit({
+                      ...edit,
+                      comboEmployeeId: event.target.value,
+                      comboEmployeeName: event.target.value
+                        ? ""
+                        : edit.comboEmployeeName,
+                    })
+                  }
+                >
+                  <option value="">Выберите сотрудника</option>
+                  {roster
+                    .filter((e) => e.id !== opened.employee.id)
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.name}
+                      </option>
+                    ))}
+                </select>
+                <input
+                  type="text"
+                  value={edit.comboEmployeeName}
+                  onChange={(event) =>
+                    setEdit({
+                      ...edit,
+                      comboEmployeeId: "",
+                      comboEmployeeName: event.target.value,
+                    })
+                  }
+                  placeholder="Или введите ФИО вручную"
+                />
+              </label>
+            )}
+            <label>
+              Комментарий
+              <textarea
+                value={edit.comment}
+                onChange={(event) =>
+                  setEdit({ ...edit, comment: event.target.value })
+                }
+                placeholder="Например: забыл пропуск, отлучался на 40 минут, заменял сотрудника"
+              />
+            </label>
+            <div className="calcPreview">
+              <span>Основное {fmt(previewBaseHours)}</span>
+              <b>+</b>
+              <span>Переработка {fmt(previewOvertimeHours)}</span>
+              <b>+</b>
+              <span>Совмещение {fmt(previewComboHours)}</span>
+              <b>=</b>
+              <strong>Итого {fmt(totalHours)}</strong>
+            </div>
+            <button className="primary" onClick={save}>
+              Сохранить в табеле
+            </button>
+          </div>
+        )}
+        <button className={canEdit ? "outline openDetail" : "primary"} onClick={onOpenDetail}>
+          Открыть карточку сотрудника
+        </button>
+      </div>
+    </div>
   );
 }
 function Problems({ employees, go }: any) {
@@ -1001,37 +1732,62 @@ function Problems({ employees, go }: any) {
     </>
   );
 }
-function Detail({ e, role, go, update }: any) {
-  const fix = async (kind: "entry" | "exit") => {
-    const val = prompt(
-      `Укажите время ${kind === "entry" ? "входа" : "выхода"}`,
-      kind === "entry" ? "08:00" : "17:00",
-    );
-    if (val) {
-      const next = {
-        ...e,
-        [kind]: val,
-        fact: 8,
-        total: 8 + e.combo,
-        status: "Ручная корректировка",
-      };
-      const start = kind === "entry" ? val : e.entry !== "—" ? e.entry : "08:00";
-      const end = kind === "exit" ? val : e.exit !== "—" ? e.exit : "17:00";
-      await fetch("/api/schedule-overrides", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          employee_id: e.id,
-          work_date: e.date || "2026-07-06",
-          start_time: start,
-          end_time: end,
-          reason: "manual_time_correction",
-          comment: `Ручная корректировка ${kind === "entry" ? "входа" : "выхода"}`,
-          changed_by: role,
-        }),
-      }).catch(() => null);
-      update(next);
-    }
+function Detail({ e, employees = [], role, go, update }: any) {
+  const [correction, setCorrection] = useState({
+    date: e.date || "2026-07-06",
+    start: e.entry !== "—" ? e.entry : "08:00",
+    end: e.exit !== "—" ? e.exit : "17:00",
+    reason: "missing_entry" as CorrectionReason,
+    comboEmployeeId: "",
+    comboEmployeeName: "",
+    comment: "",
+  });
+  const correctionNeedsOnlyEntry = correction.reason === "missing_entry";
+  const correctionNeedsOnlyExit = correction.reason === "missing_exit";
+  const correctionRelatedEmployee = employees.find(
+    (x: Employee) => String(x.id) === correction.comboEmployeeId,
+  );
+  const saveCorrection = async () => {
+    const isAbsence = ["sick_leave", "vacation"].includes(correction.reason);
+    const start = isAbsence ? "00:00" : correction.start;
+    const end = isAbsence ? "00:00" : correction.end;
+    const hours = isAbsence ? 0 : payableManualHours(e, start, end);
+    const status =
+      correction.reason === "schedule_change"
+        ? "Изменен график"
+        : "Ручная корректировка";
+    await fetch("/api/schedule-overrides", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        employee_id: e.id,
+        work_date: correction.date,
+        start_time: start,
+        end_time: end,
+        reason: correction.reason,
+        comment:
+          correction.comment ||
+          correctionReasons[correction.reason as CorrectionReason],
+        changed_by: role,
+        combo_employee_id:
+          correction.reason === "substitution" && correctionRelatedEmployee
+            ? correctionRelatedEmployee.id
+            : null,
+        combo_employee_name:
+          correction.reason === "substitution"
+            ? correctionRelatedEmployee?.name ||
+              correction.comboEmployeeName.trim()
+            : "",
+      }),
+    }).catch(() => null);
+    update({
+      ...e,
+      entry: start,
+      exit: end,
+      fact: hours,
+      total: hours + e.combo,
+      status,
+    });
   };
   return (
     <>
@@ -1042,10 +1798,10 @@ function Detail({ e, role, go, update }: any) {
       <div className="detailHead">
         <div className="avatar xl">{e.initials}</div>
         <div>
-          <span className="eyebrow">КАРТОЧКА ЗА 6 ИЮЛЯ</span>
+          <span className="eyebrow">КАРТОЧКА ЗА {formatDate(e.date || "2026-07-06")}</span>
           <h1>{e.name}</h1>
           <p>
-            {e.department} · {e.schedule}
+            {e.department} · {formatScheduleText(e.schedule)}
           </p>
         </div>
         <Status s={e.status} />
@@ -1099,28 +1855,159 @@ function Detail({ e, role, go, update }: any) {
               <b>{fmt(e.total)}</b>
             </div>
           </div>
-          {role === "boss" && (
+          {role !== "observer" && (
             <div className="panel actions">
-              <h2>Исправить исключение</h2>
-              <button onClick={() => fix("entry")}>
-                Исправить вход <ChevronRight />
-              </button>
-              <button onClick={() => fix("exit")}>
-                Исправить выход <ChevronRight />
+              <h2>Ручная корректировка</h2>
+              <label>
+                Дата
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="дд-мм-гггг"
+                  value={formatDate(correction.date)}
+                  onChange={(event) =>
+                    setCorrection({
+                      ...correction,
+                      date: parseDisplayDate(event.target.value),
+                    })
+                  }
+                />
+              </label>
+              <label>
+                Причина
+                <select
+                  value={correction.reason}
+                  onChange={(event) =>
+                    setCorrection({
+                      ...correction,
+                      reason: event.target.value as CorrectionReason,
+                    })
+                  }
+                >
+                  {Object.entries(correctionReasons).map(([key, label]) => (
+                    <option key={key} value={key}>
+                      {label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {!["sick_leave", "vacation"].includes(correction.reason) && (
+                <div className="fieldRow">
+                  {!correctionNeedsOnlyExit && (
+                    <label>
+                      Начало
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="HH:mm"
+                        pattern="[0-2][0-9]:[0-5][0-9]"
+                        value={correction.start}
+                        onChange={(event) =>
+                          setCorrection({
+                            ...correction,
+                            start: normalizeTimeInput(event.target.value),
+                          })
+                        }
+                        onBlur={() =>
+                          setCorrection({
+                            ...correction,
+                            start: formatTime(correction.start),
+                          })
+                        }
+                      />
+                    </label>
+                  )}
+                  {!correctionNeedsOnlyEntry && (
+                    <label>
+                      Окончание
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="HH:mm"
+                        pattern="[0-2][0-9]:[0-5][0-9]"
+                        value={correction.end}
+                        onChange={(event) =>
+                          setCorrection({
+                            ...correction,
+                            end: normalizeTimeInput(event.target.value),
+                          })
+                        }
+                        onBlur={() =>
+                          setCorrection({
+                            ...correction,
+                            end: formatTime(correction.end),
+                          })
+                        }
+                      />
+                    </label>
+                  )}
+                </div>
+              )}
+              {correction.reason === "substitution" && (
+                <label>
+                  За какого сотрудника вышел
+                  <select
+                    value={correction.comboEmployeeId}
+                    onChange={(event) =>
+                      setCorrection({
+                        ...correction,
+                        comboEmployeeId: event.target.value,
+                        comboEmployeeName: event.target.value
+                          ? ""
+                          : correction.comboEmployeeName,
+                      })
+                    }
+                  >
+                    <option value="">Выберите сотрудника</option>
+                    {employees
+                      .filter((x: Employee) => x.id !== e.id)
+                      .map((x: Employee) => (
+                        <option key={x.id} value={x.id}>
+                          {x.name}
+                        </option>
+                      ))}
+                  </select>
+                  <input
+                    value={correction.comboEmployeeName}
+                    onChange={(event) =>
+                      setCorrection({
+                        ...correction,
+                        comboEmployeeId: "",
+                        comboEmployeeName: event.target.value,
+                      })
+                    }
+                    placeholder="Или введите ФИО вручную"
+                  />
+                </label>
+              )}
+              <label>
+                Комментарий
+                <textarea
+                  value={correction.comment}
+                  onChange={(event) =>
+                    setCorrection({
+                      ...correction,
+                      comment: event.target.value,
+                    })
+                  }
+                  placeholder="Например: объяснительная, служебная записка, номер больничного"
+                />
+              </label>
+              <button className="primary" onClick={saveCorrection}>
+                Сохранить корректировку
               </button>
               <button
-                onClick={() =>
-                  update({
-                    ...e,
-                    entry: "08:00",
-                    exit: "17:00",
-                    fact: 8,
-                    total: 8 + e.combo,
-                    status: "Ручная корректировка",
-                  })
-                }
+                onClick={() => {
+                  setCorrection({
+                    ...correction,
+                    start: "08:00",
+                    end: "17:00",
+                    reason: "forgot_pass",
+                    comment: "Полный день по подтверждению начальника",
+                  });
+                }}
               >
-                Поставить полный день <ChevronRight />
+                Заполнить полный день <ChevronRight />
               </button>
               <button onClick={() => go("schedule", e)}>
                 Изменить график на день <ChevronRight />
@@ -1137,7 +2024,7 @@ function Detail({ e, role, go, update }: any) {
 }
 const Event = ({ time, title, place, bad }: any) => (
   <div className={"event " + (bad ? "bad" : "")}>
-    <b>{time}</b>
+    <b>{formatTime(time)}</b>
     <i />
     <div>
       <strong>{bad ? "Событие не найдено" : title}</strong>
@@ -1155,33 +2042,45 @@ function Schedule({ e, go, update }: any) {
       e={e}
       go={go}
       onSave={() => {
-        update({ ...e, schedule: `${start}–${end}`, status: "Изменен график" });
+        update({
+          ...e,
+          schedule: formatRange(start, end),
+          status: "Изменен график",
+        });
         go("detail", {
           ...e,
-          schedule: `${start}–${end}`,
+          schedule: formatRange(start, end),
           status: "Изменен график",
         });
       }}
     >
       <label>
         Старый график
-        <input disabled value={e.schedule} />
+        <input disabled value={formatScheduleText(e.schedule)} />
       </label>
       <div className="fieldRow">
         <label>
           Начало
           <input
-            type="time"
+            type="text"
+            inputMode="numeric"
+            placeholder="HH:mm"
+            pattern="[0-2][0-9]:[0-5][0-9]"
             value={start}
-            onChange={(x) => setStart(x.target.value)}
+            onChange={(x) => setStart(normalizeTimeInput(x.target.value))}
+            onBlur={() => setStart(formatTime(start))}
           />
         </label>
         <label>
           Окончание
           <input
-            type="time"
+            type="text"
+            inputMode="numeric"
+            placeholder="HH:mm"
+            pattern="[0-2][0-9]:[0-5][0-9]"
             value={end}
-            onChange={(x) => setEnd(x.target.value)}
+            onChange={(x) => setEnd(normalizeTimeInput(x.target.value))}
+            onBlur={() => setEnd(formatTime(end))}
           />
         </label>
       </div>
@@ -1199,8 +2098,13 @@ function Schedule({ e, go, update }: any) {
     </EditPage>
   );
 }
-function Combination({ e, go, update }: any) {
+function Combination({ e, employees, go, update }: any) {
   const [h, setH] = useState(4);
+  const [employeeId, setEmployeeId] = useState("");
+  const [employeeName, setEmployeeName] = useState("");
+  const relatedEmployee = employees?.find(
+    (x: Employee) => String(x.id) === employeeId,
+  );
   return (
     <EditPage
       title="Добавить совмещение"
@@ -1232,10 +2136,30 @@ function Combination({ e, go, update }: any) {
       </label>
       <label>
         За кого выполнялось
-        <select>
-          <option>Николай Орлов</option>
-          <option>Павел Новиков</option>
+        <select
+          value={employeeId}
+          onChange={(event) => {
+            setEmployeeId(event.target.value);
+            if (event.target.value) setEmployeeName("");
+          }}
+        >
+          <option value="">Выберите сотрудника</option>
+          {(employees || [])
+            .filter((x: Employee) => x.id !== e.id)
+            .map((x: Employee) => (
+              <option key={x.id} value={x.id}>
+                {x.name}
+              </option>
+            ))}
         </select>
+        <input
+          value={employeeName}
+          onChange={(event) => {
+            setEmployeeId("");
+            setEmployeeName(event.target.value);
+          }}
+          placeholder="Или введите ФИО вручную"
+        />
       </label>
       <label>
         Причина
@@ -1256,6 +2180,12 @@ function Combination({ e, go, update }: any) {
         <b>=</b>
         <strong>К оплате {fmt(e.fact + h)}</strong>
       </div>
+      {(relatedEmployee?.name || employeeName.trim()) && (
+        <div className="calcPreview">
+          <span>За сотрудника</span>
+          <strong>{relatedEmployee?.name || employeeName.trim()}</strong>
+        </div>
+      )}
     </EditPage>
   );
 }
@@ -1272,7 +2202,7 @@ function EditPage({ title, text, e, go, onSave, children }: any) {
           <span className="avatar">{e.initials}</span>
           <div>
             <b>{e.name}</b>
-            <small>6 июля 2026 · {e.department}</small>
+            <small>{formatDate(e.date || "2026-07-06")} · {e.department}</small>
           </div>
         </div>
         {children}
@@ -1430,17 +2360,27 @@ function SkudImport({
               disabled={state.saving}
               onClick={async () => {
                 setState({ ...state, saving: true, error: undefined });
-                const response = await fetch("/api/skud-days/import", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ rows }),
-                });
-                if (!response.ok) {
-                  const e = await response.json().catch(() => ({}));
+                try {
+                  const response = await fetch("/api/skud-days/import", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ rows }),
+                  });
+                  if (!response.ok) {
+                    const e = await response.json().catch(() => ({}));
+                    setState({
+                      ...state,
+                      saving: false,
+                      error: e.error || "Не удалось сохранить импорт",
+                    });
+                    return;
+                  }
+                } catch {
                   setState({
                     ...state,
                     saving: false,
-                    error: e.error || "Не удалось сохранить импорт",
+                    error:
+                      "Не удалось применить импорт: сервер API недоступен. Запустите npm run dev:server и повторите импорт.",
                   });
                   return;
                 }
@@ -1471,6 +2411,492 @@ function SkudImport({
     </>
   );
 }
+function BossEmployeeCalendar({
+  employees,
+  role,
+  user,
+}: {
+  employees: Employee[];
+  role: Role;
+  user: string;
+}) {
+  const roster = Array.from(
+    employees
+      .reduce((map, e) => {
+        if (!map.has(e.id) || !e.date) map.set(e.id, e);
+        return map;
+      }, new Map<number, Employee>())
+      .values(),
+  );
+  const today = localDateString();
+  const monthEnd = "2026-07-31";
+  const openEndedHorizonDays = 365;
+  const [selectedId, setSelectedId] = useState(roster[0]?.id || 0);
+  const [overrides, setOverrides] = useState<WorkOverride[]>([]);
+  const [mode, setMode] = useState<"schedule_change" | "sick_leave" | "vacation">(
+    "schedule_change",
+  );
+  const [from, setFrom] = useState(today);
+  const [to, setTo] = useState(today);
+  const [noEnd, setNoEnd] = useState(false);
+  const [start, setStart] = useState("08:00");
+  const [end, setEnd] = useState("17:00");
+  const [comment, setComment] = useState("");
+  const [message, setMessage] = useState("");
+  const [periodCloseDates, setPeriodCloseDates] = useState<
+    Record<string, string>
+  >({});
+  const [editingPeriodKey, setEditingPeriodKey] = useState("");
+  const [periodModalOpen, setPeriodModalOpen] = useState(false);
+  const selected = roster.find((e) => e.id === selectedId) || roster[0];
+  const actorName = accounts[user]?.name || user || role;
+  const loadOverrides = () =>
+    fetch("/api/schedule-overrides?month=2026-07")
+      .then((r) => (r.ok ? r.json() : []))
+      .then(setOverrides)
+      .catch(() => setOverrides([]));
+  useEffect(() => {
+    loadOverrides();
+  }, []);
+  const employeeOverrides = overrides.filter(
+    (row) => row.employee_id === selected?.id,
+  );
+  const byDate = employeeOverrides.reduce((map, row) => {
+    map.set(row.work_date, [...(map.get(row.work_date) || []), row]);
+    return map;
+  }, new Map<string, WorkOverride[]>());
+  const markFor = (date: string) => {
+    const rows = byDate.get(date) || [];
+    if (rows.some((row) => row.reason === "sick_leave")) return "Б";
+    if (rows.some((row) => row.reason === "vacation")) return "ОТ";
+    if (rows.some((row) => row.reason === "schedule_change")) return "гр";
+    return rows.length ? "*" : "";
+  };
+  const assignedPeriods = Array.from(
+    employeeOverrides
+      .filter((row) =>
+        ["schedule_change", "sick_leave", "vacation"].includes(row.reason),
+      )
+      .reduce((map, row) => {
+        const key = [
+          row.reason,
+          row.start_time,
+          row.end_time,
+          row.comment,
+          row.changed_by,
+        ].join("|");
+        const current = map.get(key);
+        map.set(key, current ? [...current, row] : [row]);
+        return map;
+      }, new Map<string, WorkOverride[]>())
+      .entries(),
+  ).map(([key, rows]) => {
+    const dates = rows.map((row) => row.work_date).sort();
+    return {
+      key,
+      rows,
+      from: dates[0],
+      to: dates[dates.length - 1],
+      openEnded: rows[0]?.comment?.includes("Время окончания неопределено"),
+    };
+  });
+  const bulkDeletePeriod = async (
+    period: (typeof assignedPeriods)[number],
+    fromDate?: string,
+  ) => {
+    const sample = period.rows[0];
+    const response = await fetch("/api/schedule-overrides/bulk-delete", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        employee_id: sample.employee_id,
+        reason: sample.reason,
+        start_time: sample.start_time,
+        end_time: sample.end_time,
+        comment: sample.comment,
+        changed_by: role === "admin" ? null : actorName,
+        from_date: fromDate || null,
+      }),
+    });
+    const result = response.ok ? await response.json() : { count: 0 };
+    setMessage(
+      fromDate
+        ? `Период закрыт с ${formatDate(fromDate)}: удалено ${result.count} будущих дней`
+        : `Период удалён: ${result.count} дней`,
+    );
+    loadOverrides();
+  };
+  const closePeriod = (period: (typeof assignedPeriods)[number]) => {
+    const closeDate = periodCloseDates[period.key] || today;
+    bulkDeletePeriod(period, closeDate);
+  };
+  const removePeriod = (period: (typeof assignedPeriods)[number]) => {
+    const sample = period.rows[0];
+    const label = correctionReasons[sample.reason as CorrectionReason] || sample.reason;
+    if (
+      confirm(
+        `Удалить период "${label}" для ${selected?.name}? Это уберёт все дневные правки этого периода.`,
+      )
+    )
+      bulkDeletePeriod(period);
+  };
+  const resetPeriodForm = () => {
+    setEditingPeriodKey("");
+    setMode("schedule_change");
+    setFrom(today);
+    setTo(today);
+    setNoEnd(false);
+    setStart("08:00");
+    setEnd("17:00");
+    setComment("");
+    setMessage("");
+  };
+  const editPeriod = (period: (typeof assignedPeriods)[number]) => {
+    const sample = period.rows[0];
+    setEditingPeriodKey(period.key);
+    setMode(sample.reason as "schedule_change" | "sick_leave" | "vacation");
+    setFrom(period.from);
+    setTo(period.openEnded ? period.from : period.to);
+    setNoEnd(!!period.openEnded);
+    setStart(formatTime(sample.start_time));
+    setEnd(formatTime(sample.end_time));
+    setComment(
+      (sample.comment || "")
+        .replace(" · Время окончания неопределено", "")
+        .replace("Время окончания неопределено", ""),
+    );
+    setMessage("Период загружен для редактирования");
+    setPeriodModalOpen(true);
+  };
+  const savePeriod = async () => {
+    if (!selected) return;
+    const editingPeriod = assignedPeriods.find((period) => period.key === editingPeriodKey);
+    if (editingPeriod) await bulkDeletePeriod(editingPeriod);
+    const toDate = noEnd ? addDays(from, openEndedHorizonDays) : to;
+    const dates = datesBetween(from, toDate);
+    const isAbsence = mode === "sick_leave" || mode === "vacation";
+    const payloads = dates.map((date) => ({
+      employee_id: selected.id,
+      work_date: date,
+      start_time: isAbsence ? "00:00" : start,
+      end_time: isAbsence ? "00:00" : end,
+      reason: mode,
+      comment:
+        [
+          comment ||
+            (mode === "schedule_change"
+              ? "Временное изменение графика"
+              : correctionReasons[mode]),
+          noEnd ? "Время окончания неопределено" : "",
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      changed_by: actorName,
+      leave_minutes: 0,
+      combo_hours: 0,
+      overtime_hours: 0,
+      combo_employee_id: null,
+      combo_employee_name: "",
+    }));
+    await Promise.all(
+      payloads.map((payload) =>
+        fetch("/api/schedule-overrides", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      ),
+    );
+    setMessage(
+      noEnd
+        ? `Сохранено: открытый период с ${formatDate(from)}`
+        : `Сохранено: ${payloads.length} дней`,
+    );
+    setComment("");
+    setEditingPeriodKey("");
+    setPeriodModalOpen(false);
+    loadOverrides();
+  };
+  return (
+    <>
+      <PageHead
+        eye="КОМАНДА"
+        title="Сотрудники"
+        text="Календарь графиков, больничных и отпусков по вашим сотрудникам"
+      />
+      <div className="staffPlanner">
+        <div className="panel staffList">
+          <div className="panelHead">
+            <div>
+              <span className="eyebrow">СОТРУДНИКИ</span>
+              <h2>{roster.length} человек</h2>
+            </div>
+          </div>
+          {roster.map((e) => (
+            <button
+              key={e.id}
+              className={selected?.id === e.id ? "selected" : ""}
+              onClick={() => {
+                setSelectedId(e.id);
+                setMessage("");
+              }}
+            >
+              <span className="avatar sm">{e.initials}</span>
+              <span>
+                <b>{e.name}</b>
+                <small>{e.department}</small>
+              </span>
+            </button>
+          ))}
+        </div>
+        <div className="panel staffCalendar">
+          <div className="panelHead">
+            <div>
+              <span className="eyebrow">КАЛЕНДАРЬ 07-2026</span>
+              <h2>{selected?.name || "Сотрудник не выбран"}</h2>
+            </div>
+            <button
+              className="primary"
+              onClick={() => {
+                resetPeriodForm();
+                setPeriodModalOpen(true);
+              }}
+            >
+              Внести период
+            </button>
+          </div>
+          <div className="staffMonth">
+            {monthDays.map((d) => {
+              const mark = markFor(d.date);
+              return (
+                <button
+                  key={d.date}
+                  className={mark ? "marked" : ""}
+                  onClick={() => {
+                    setFrom(d.date);
+                    setTo(d.date);
+                  }}
+                >
+                  <b>{d.day}</b>
+                  <small>{d.weekday}</small>
+                  <span>{mark}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="timesheetLegend staffLegend">
+            <span><i className="check" /> Б больничный</span>
+            <span><i className="vac" /> ОТ отпуск</span>
+            <span><i className="fact" /> гр временный график</span>
+          </div>
+          {assignedPeriods.length > 0 && (
+            <div className="openPeriods">
+              <h3>Назначенные периоды</h3>
+              {assignedPeriods.map((period) => {
+                const sample = period.rows[0];
+                return (
+                  <div className="openPeriod" key={period.key}>
+                    <div>
+                      <b>
+                        {correctionReasons[sample.reason as CorrectionReason] ||
+                          sample.reason}
+                      </b>
+                      <small>
+                        С {formatDate(period.from)}
+                        {period.openEnded
+                          ? " · окончание не определено"
+                          : ` · по ${formatDate(period.to)}`}
+                        {" · "}
+                        {sample.reason === "schedule_change"
+                          ? `${formatRange(sample.start_time, sample.end_time)} · `
+                          : ""}
+                        {sample.comment}
+                      </small>
+                    </div>
+                    {period.openEnded && (
+                    <label>
+                      Закрыть с даты
+                      <DatePickerInput
+                        value={periodCloseDates[period.key] || today}
+                        onChange={(value) =>
+                          setPeriodCloseDates({
+                            ...periodCloseDates,
+                            [period.key]: value,
+                          })
+                        }
+                      />
+                    </label>
+                    )}
+                    <div className="openPeriodActions">
+                      <button className="outline" onClick={() => editPeriod(period)}>
+                        Редактировать
+                      </button>
+                      {period.openEnded && (
+                      <button className="outline" onClick={() => closePeriod(period)}>
+                        Закрыть
+                      </button>
+                      )}
+                      <button className="danger mini" onClick={() => removePeriod(period)}>
+                        Удалить
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+      {periodModalOpen && (
+        <div className="cellModalShade" onClick={() => setPeriodModalOpen(false)}>
+          <div
+            className="cellModal panel periodModal"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              className="closeModal"
+              onClick={() => setPeriodModalOpen(false)}
+            >
+              <X />
+            </button>
+            <span className="eyebrow">ПЕРИОД СОТРУДНИКА</span>
+            <h2>{editingPeriodKey ? "Редактировать период" : "Внести период"}</h2>
+            <p>{selected?.name}</p>
+            <div className="staffEditor">
+              <label>
+                Тип изменения
+                <select
+                  value={mode}
+                  onChange={(event) => setMode(event.target.value as any)}
+                >
+                  <option value="schedule_change">Временный график</option>
+                  <option value="sick_leave">Больничный</option>
+                  <option value="vacation">Отпуск</option>
+                </select>
+              </label>
+              <div className="fieldRow">
+                <label>
+                  С даты
+                  <DatePickerInput
+                    value={from}
+                    onChange={(value) => {
+                      setFrom(value);
+                      if (noEnd) setTo(value);
+                    }}
+                  />
+                </label>
+                <label>
+                  По дату
+                  {noEnd ? (
+                    <input disabled value="Не определено" />
+                  ) : (
+                    <DatePickerInput value={to} onChange={setTo} />
+                  )}
+                </label>
+              </div>
+              <label className="checkLine">
+                <input
+                  type="checkbox"
+                  checked={noEnd}
+                  onChange={(event) => setNoEnd(event.target.checked)}
+                />
+                Время окончания неопределено
+              </label>
+              {noEnd && (
+                <div className="calcPreview">
+                  <span>Открытый период</span>
+                  <strong>
+                    С {formatDate(from)} и далее, пока начальник не изменит обратно
+                  </strong>
+                </div>
+              )}
+          {mode === "schedule_change" && (
+            <div className="fieldRow">
+              <label>
+                Начало
+                <input
+                  value={start}
+                  inputMode="numeric"
+                  placeholder="HH:mm"
+                  onChange={(event) =>
+                    setStart(normalizeTimeInput(event.target.value))
+                  }
+                  onBlur={() => setStart(formatTime(start))}
+                />
+              </label>
+              <label>
+                Окончание
+                <input
+                  value={end}
+                  inputMode="numeric"
+                  placeholder="HH:mm"
+                  onChange={(event) =>
+                    setEnd(normalizeTimeInput(event.target.value))
+                  }
+                  onBlur={() => setEnd(formatTime(end))}
+                />
+              </label>
+            </div>
+          )}
+              <label>
+                Комментарий
+                <textarea
+                  value={comment}
+                  onChange={(event) => setComment(event.target.value)}
+                  placeholder="Номер больничного, приказ на отпуск или причина графика"
+                />
+              </label>
+              {message && <div className="success">{message}</div>}
+              <button className="primary" onClick={savePeriod} disabled={!selected}>
+                {editingPeriodKey ? "Сохранить изменения" : "Сохранить период"}
+              </button>
+              {editingPeriodKey && (
+                <button
+                  className="outline openDetail"
+                  onClick={resetPeriodForm}
+                >
+                  Сбросить редактирование
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+function DatePickerInput({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const pickerRef = useRef<HTMLInputElement | null>(null);
+  const openPicker = () => {
+    const input = pickerRef.current as HTMLInputElement & {
+      showPicker?: () => void;
+    };
+    if (input?.showPicker) input.showPicker();
+    else input?.click();
+  };
+  return (
+    <span className="datePickerField">
+      <input readOnly value={formatDate(value)} onClick={openPicker} />
+      <button type="button" onClick={openPicker} aria-label="Выбрать дату">
+        <CalendarCheck />
+      </button>
+      <input
+        ref={pickerRef}
+        className="nativeDateInput"
+        type="date"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        tabIndex={-1}
+      />
+    </span>
+  );
+}
 function EmployeeDirectory({
   employees,
   setEmployees,
@@ -1482,7 +2908,7 @@ function EmployeeDirectory({
   const [selected, setSelected] = useState<Employee | null>(null);
   const [departments, setDepartments] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
-  const [from, setFrom] = useState(new Date().toISOString().slice(0, 10));
+  const [from, setFrom] = useState(localDateString());
   const [message, setMessage] = useState("");
   useEffect(() => {
     Promise.all([
@@ -1558,7 +2984,7 @@ function EmployeeDirectory({
                 <span>
                   <b>{e.name}</b>
                   <small>
-                    {e.department} · {e.schedule}
+                    {e.department} · {formatScheduleText(e.schedule)}
                     {e.needsReview ? " · Требует проверки" : ""}
                   </small>
                 </span>
@@ -1623,9 +3049,11 @@ function EmployeeDirectory({
               <label>
                 Действует с
                 <input
-                  type="date"
-                  value={from}
-                  onChange={(e) => setFrom(e.target.value)}
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="дд-мм-гггг"
+                  value={formatDate(from)}
+                  onChange={(e) => setFrom(parseDisplayDate(e.target.value))}
                 />
               </label>
               {message && (
@@ -1652,12 +3080,30 @@ function EmployeeDirectory({
     </>
   );
 }
-function Admin() {
-  const emptyUser = { login: "", name: "", pass: "", role: "boss" as Role };
+function Admin({ employees }: { employees: Employee[] }) {
+  const emptyUser = {
+    login: "",
+    name: "",
+    pass: "",
+    role: "boss" as Role,
+    employeeIds: [] as number[],
+    departmentIds: [] as number[],
+  };
   const [rows, setRows] = useState<Record<string, Account>>({ ...accounts });
   const [selected, setSelected] = useState(emptyUser);
   const [originalLogin, setOriginalLogin] = useState("");
   const [message, setMessage] = useState("");
+  const uniqueEmployees = employees.filter(
+    (e, index, list) => list.findIndex((x) => x.id === e.id) === index,
+  );
+  const departments = Array.from(
+    uniqueEmployees
+      .reduce((map, e) => {
+        if (e.departmentId) map.set(Number(e.departmentId), e.department);
+        return map;
+      }, new Map<number, string>())
+      .entries(),
+  ).sort((a, b) => a[1].localeCompare(b[1], "ru"));
   const persist = (next: Record<string, Account>) => {
     Object.keys(accounts).forEach((key) => delete accounts[key]);
     Object.assign(accounts, next);
@@ -1665,7 +3111,14 @@ function Admin() {
     setRows({ ...next });
   };
   const edit = (login: string) => {
-    setSelected({ login, ...rows[login] });
+    setSelected({
+      login,
+      name: rows[login].name,
+      pass: "",
+      role: rows[login].role,
+      employeeIds: rows[login].employeeIds || [],
+      departmentIds: rows[login].departmentIds || [],
+    });
     setOriginalLogin(login);
     setMessage("");
   };
@@ -1676,7 +3129,7 @@ function Admin() {
   };
   const save = () => {
     const login = selected.login.trim();
-    if (!login || !selected.name.trim() || !selected.pass.trim()) {
+    if (!login || !selected.name.trim() || (!originalLogin && !selected.pass.trim())) {
       setMessage("Заполните логин, имя и пароль");
       return;
     }
@@ -1695,12 +3148,22 @@ function Admin() {
     if (originalLogin && originalLogin !== login) delete next[originalLogin];
     next[login] = {
       name: selected.name.trim(),
-      pass: selected.pass,
+      pass: selected.pass.trim() || rows[originalLogin]?.pass || "",
       role: selected.role,
+      employeeIds: selected.role === "boss" ? selected.employeeIds : undefined,
+      departmentIds:
+        selected.role === "boss" ? selected.departmentIds : undefined,
     };
     persist(next);
     setOriginalLogin(login);
-    setSelected({ login, ...next[login] });
+    setSelected({
+      login,
+      name: next[login].name,
+      pass: "",
+      role: next[login].role,
+      employeeIds: next[login].employeeIds || [],
+      departmentIds: next[login].departmentIds || [],
+    });
     setMessage("Пользователь сохранён");
   };
   const remove = () => {
@@ -1787,13 +3250,16 @@ function Admin() {
             />
           </label>
           <label>
-            Пароль
+            {originalLogin ? "Новый пароль" : "Пароль"}
             <input
+              type="password"
               value={selected.pass}
               onChange={(e) =>
                 setSelected({ ...selected, pass: e.target.value })
               }
-              placeholder="Пароль"
+              placeholder={
+                originalLogin ? "Оставьте пустым, чтобы не менять" : "Пароль"
+              }
             />
           </label>
           <label>
@@ -1811,6 +3277,76 @@ function Admin() {
               ))}
             </select>
           </label>
+          {selected.role === "boss" && (
+            <div className="bossScope">
+              <div>
+                <span className="eyebrow">ЗОНА ОТВЕТСТВЕННОСТИ</span>
+                <small>
+                  {selected.departmentIds.length} подразделений ·{" "}
+                  {selected.employeeIds.length} сотрудников
+                </small>
+              </div>
+              <div className="bossScopeSection">
+                <b>Подразделения</b>
+                <div className="bossScopeList">
+                  {departments.map(([id, name]) => (
+                    <label key={id}>
+                      <input
+                        type="checkbox"
+                        checked={selected.departmentIds.includes(id)}
+                        onChange={(event) => {
+                          const nextIds = event.target.checked
+                            ? [...selected.departmentIds, id]
+                            : selected.departmentIds.filter(
+                                (departmentId) => departmentId !== id,
+                              );
+                          setSelected({
+                            ...selected,
+                            departmentIds: nextIds,
+                          });
+                        }}
+                      />
+                      <span>
+                        <b>{name}</b>
+                        <small>
+                          {
+                            uniqueEmployees.filter(
+                              (e) => Number(e.departmentId) === id,
+                            ).length
+                          }{" "}
+                          сотрудников
+                        </small>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="bossScopeSection">
+                <b>Отдельные сотрудники</b>
+                <small>Для точечных исключений вне выбранных подразделений</small>
+              <div className="bossScopeList">
+                {uniqueEmployees.map((e) => (
+                  <label key={e.id}>
+                    <input
+                      type="checkbox"
+                      checked={selected.employeeIds.includes(e.id)}
+                      onChange={(event) => {
+                        const nextIds = event.target.checked
+                          ? [...selected.employeeIds, e.id]
+                          : selected.employeeIds.filter((id) => id !== e.id);
+                        setSelected({ ...selected, employeeIds: nextIds });
+                      }}
+                    />
+                    <span>
+                      <b>{e.name}</b>
+                      <small>{e.department}</small>
+                    </span>
+                  </label>
+                ))}
+                </div>
+              </div>
+            </div>
+          )}
           {message && (
             <div className={message.includes("Заполните") || message.includes("есть") || message.includes("Нельзя") ? "error" : "success"}>
               {message}
@@ -1829,6 +3365,112 @@ function Admin() {
     </>
   );
 }
+function AccountSettings({ login }: { login: string }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [repeat, setRepeat] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [message, setMessage] = useState("");
+  const account = accounts[login];
+  const save = () => {
+    if (!account) {
+      setMessage("Учетная запись не найдена");
+      return;
+    }
+    if (account.pass !== current) {
+      setMessage("Текущий пароль указан неверно");
+      return;
+    }
+    if (!next.trim()) {
+      setMessage("Введите новый пароль");
+      return;
+    }
+    if (next !== repeat) {
+      setMessage("Пароли не совпадают");
+      return;
+    }
+    const updated = {
+      ...accounts,
+      [login]: { ...account, pass: next.trim() },
+    };
+    Object.keys(accounts).forEach((key) => delete accounts[key]);
+    Object.assign(accounts, updated);
+    saveAccounts(updated);
+    setCurrent("");
+    setNext("");
+    setRepeat("");
+    setMessage("Пароль изменен");
+  };
+  return (
+    <>
+      <PageHead
+        eye="ПРОФИЛЬ"
+        title="Моя учетная запись"
+        text="Смена пароля текущего пользователя"
+      />
+      <div className="panel edit accountPanel">
+        <div className="editPerson">
+          <span className="avatar">
+            {account?.name
+              ?.split(" ")
+              .map((x: string) => x[0])
+              .slice(0, 2)}
+          </span>
+          <div>
+            <b>{account?.name}</b>
+            <small>
+              {login} · {account ? roleName[account.role] : "Нет роли"}
+            </small>
+          </div>
+        </div>
+        <label>
+          Текущий пароль
+          <input
+            type={showPassword ? "text" : "password"}
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            placeholder="Введите текущий пароль"
+          />
+        </label>
+        <label>
+          Новый пароль
+          <input
+            type={showPassword ? "text" : "password"}
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            placeholder="Введите новый пароль"
+          />
+        </label>
+        <label>
+          Повторите пароль
+          <input
+            type={showPassword ? "text" : "password"}
+            value={repeat}
+            onChange={(e) => setRepeat(e.target.value)}
+            placeholder="Повторите новый пароль"
+          />
+        </label>
+        <label className="checkLine">
+          <input
+            type="checkbox"
+            checked={showPassword}
+            onChange={(e) => setShowPassword(e.target.checked)}
+          />
+          Показать введенные пароли
+        </label>
+        {message && (
+          <div className={message.includes("изменен") ? "success" : "error"}>
+            {message}
+          </div>
+        )}
+        <button className="primary" onClick={save}>
+          <KeyRound />
+          Изменить пароль
+        </button>
+      </div>
+    </>
+  );
+}
 function Departments({
   employees,
   setEmployees,
@@ -1841,7 +3483,7 @@ function Departments({
   const [employee, setEmployee] = useState<Employee | null>(null);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [effectiveFrom, setEffectiveFrom] = useState(
-    new Date().toISOString().slice(0, 10),
+    localDateString(),
   );
   const [applyAll, setApplyAll] = useState(false);
   const [message, setMessage] = useState("");
@@ -1989,9 +3631,13 @@ function Departments({
             <label>
               Действует с
               <input
-                type="date"
-                value={effectiveFrom}
-                onChange={(e) => setEffectiveFrom(e.target.value)}
+                type="text"
+                inputMode="numeric"
+                placeholder="дд-мм-гггг"
+                value={formatDate(effectiveFrom)}
+                onChange={(e) =>
+                  setEffectiveFrom(parseDisplayDate(e.target.value))
+                }
               />
             </label>
             <label className="check">
@@ -2040,7 +3686,7 @@ function Departments({
                   <span className="avatar sm">{e.initials}</span>
                   <span>
                     <b>{e.name}</b>
-                    <small>{e.schedule}</small>
+                    <small>{formatScheduleText(e.schedule)}</small>
                   </span>
                   <ChevronRight />
                 </button>
@@ -2095,9 +3741,13 @@ function Departments({
                 <label>
                   Действует с
                   <input
-                    type="date"
-                    value={effectiveFrom}
-                    onChange={(e) => setEffectiveFrom(e.target.value)}
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="дд-мм-гггг"
+                    value={formatDate(effectiveFrom)}
+                    onChange={(e) =>
+                      setEffectiveFrom(parseDisplayDate(e.target.value))
+                    }
                   />
                 </label>
                 <button className="primary" onClick={saveEmployee}>
@@ -2145,7 +3795,7 @@ function Departments({
               <p>{x.employee_count} сотрудников</p>
               <small>
                 {x.schedule_name
-                  ? x.schedule_name
+                  ? formatScheduleText(x.schedule_name)
                   : `График подразделения не назначен`}
               </small>
               <ChevronRight />
@@ -2184,6 +3834,7 @@ const title = (p: string) =>
       import: "Импорт СКУД",
       employees: "Сотрудники",
       admin: "Пользователи",
+      account: "Моя учетная запись",
       departments: "Подразделения",
     }) as any
   )[p];

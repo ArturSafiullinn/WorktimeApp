@@ -88,7 +88,8 @@ function minutes(v: unknown): number | null {
   return m ? +m[1] * 60 + +m[2] + Math.round(+(m[3] || 0) / 60) : null;
 }
 function isoDate(v: unknown): string {
-  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  if (v instanceof Date)
+    return `${v.getFullYear()}-${String(v.getMonth() + 1).padStart(2, "0")}-${String(v.getDate()).padStart(2, "0")}`;
   if (typeof v === "number") {
     const d = XLSX.SSF.parse_date_code(v);
     return `${d.y}-${String(d.m).padStart(2, "0")}-${String(d.d).padStart(2, "0")}`;
