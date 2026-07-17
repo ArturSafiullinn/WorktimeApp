@@ -6,6 +6,11 @@ import { pool } from "./db.mjs";
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, "../dist");
+const isExcludedFromTimesheet = (name) =>
+  String(name || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .includes("сафиуллин");
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.get("/api/health", async (_q, res) => {
@@ -87,7 +92,9 @@ app.get("/api/skud-days", async (req, res) => {
 app.post("/api/skud-days/import", async (req, res) => {
   const client = await pool.connect();
   try {
-    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const rows = (Array.isArray(req.body?.rows) ? req.body.rows : []).filter(
+      (row) => !isExcludedFromTimesheet(row.name),
+    );
     await client.query("BEGIN");
     await client.query(
       `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,

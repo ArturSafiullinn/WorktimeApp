@@ -10,6 +10,8 @@ const oneCFile =
 
 const norm = (value) => String(value ?? "").trim().replace(/\s+/g, " ");
 const nameKey = (value) => norm(value).toLowerCase().replace(/ё/g, "е");
+const isExcludedFromTimesheet = (name) =>
+  nameKey(name).includes("сафиуллин");
 const readMatrix = (file) => {
   const workbook = XLSX.readFile(file, { cellDates: false });
   return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {
@@ -38,7 +40,8 @@ const skudEmployees = skudRows
 const activeWithPass = skudEmployees.filter(
   (employee) =>
     employee.cardNumber &&
-    employee.departmentExternalId !== 3,
+    employee.departmentExternalId !== 3 &&
+    !isExcludedFromTimesheet(employee.name),
 );
 
 const oneCRows = readMatrix(oneCFile);
