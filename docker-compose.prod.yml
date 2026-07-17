@@ -1,0 +1,11 @@
+services:
+  worktime-app:
+    networks:
+      - default
+      - grandrial_web
+    ports: []
+
+networks:
+  grandrial_web:
+    external: true
+    name: grandrial_web
