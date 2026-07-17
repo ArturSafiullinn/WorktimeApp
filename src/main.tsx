@@ -735,6 +735,8 @@ type TimesheetCell = {
   day: number;
   weekday: string;
   label: string;
+  planLabel?: string;
+  issueMark?: "!" | "?";
   kind:
     | "fact"
     | "planned"
@@ -854,6 +856,7 @@ const normalizeTimeInput = (value: string) =>
 function plannedCellFor(
   e: Employee,
   d: (typeof monthDays)[number],
+  planAnchorDate?: string,
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
   if (e.needsReview && e.reviewNote?.toLowerCase().includes("отпуск"))
@@ -868,7 +871,8 @@ function plannedCellFor(
       return { ...base, label: "В", kind: "off", ...blankCellHours };
     return {
       ...base,
-      label: "пл",
+      label: "Д",
+      planLabel: "Д",
       kind: "planned",
       start: "08:00",
       end: "17:00",
@@ -889,9 +893,39 @@ function plannedCellFor(
       return { ...base, label: "В", kind: "off", ...blankCellHours };
     const start = item.start || "08:00",
       end = item.end || "17:00";
+    const label =
+      item.type === "night"
+        ? "Н"
+        : item.type === "day"
+          ? "Д"
+          : durationHours(start, end) >= 20
+            ? "С"
+            : "Д";
     return {
       ...base,
-      label: "пл",
+      label,
+      planLabel: label,
+      kind: "planned",
+      start,
+      end,
+      ...blankCellHours,
+      planned: true,
+    };
+  }
+  if (e.scheduleKind === "rolling" && e.scheduleEffectiveFrom) {
+    const anchor = planAnchorDate || e.scheduleEffectiveFrom;
+    const cycleLength =
+      e.scheduleCode === "security24" || e.scheduleCode === "day24" ? 3 : 4;
+    const index =
+      ((dayDiff(anchor, d.date) % cycleLength) + cycleLength) % cycleLength;
+    if (index !== 0)
+      return { ...base, label: "В", kind: "off", ...blankCellHours };
+    const start = e.scheduleCode === "security24" ? "07:00" : "08:00";
+    const end = start;
+    return {
+      ...base,
+      label: "С",
+      planLabel: "С",
       kind: "planned",
       start,
       end,
@@ -906,6 +940,7 @@ function cellFor(
   d: (typeof monthDays)[number],
   fact?: Employee,
   overrides: WorkOverride[] = [],
+  planAnchorDate?: string,
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
   const sortedOverrides = [...overrides].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
@@ -927,7 +962,17 @@ function cellFor(
     (!timeOverride || Number(timeOverride.id || 0) < Number(absenceOverride.id || 0));
   if (fact || sortedOverrides.length) {
     const baseHours = fact?.fact || 0;
-    const planned = plannedCellFor(e, d);
+    const planned = plannedCellFor(e, d, planAnchorDate);
+    const bad = ["Нет входа", "Нет выхода", "Требует проверки"].includes(
+      fact?.status || "",
+    );
+    if (
+      planned.kind === "off" &&
+      !sortedOverrides.length &&
+      !baseHours &&
+      bad
+    )
+      return planned;
     const start = absenceActive
       ? "00:00"
       : timeOverride?.start_time ||
@@ -957,9 +1002,6 @@ function cellFor(
       ? payableManualHours(e, start, end, leaveMinutes)
       : baseHours;
     const hours = roundHours(manualBaseHours + overtimeHours + comboHours);
-    const bad = ["Нет входа", "Нет выхода", "Требует проверки"].includes(
-      fact?.status || "",
-    );
     const relatedNames = Array.from(
       new Set(
         sortedOverrides
@@ -967,19 +1009,22 @@ function cellFor(
           .filter(Boolean) as string[],
       ),
     );
+    const factLabel = absenceActive
+      ? absenceOverride?.reason === "sick_leave"
+        ? "Б"
+        : "ОТ"
+      : comboHours || overtimeHours
+        ? `${compactHours(manualBaseHours)}+${compactHours(overtimeHours + comboHours)}`
+        : hours
+          ? `${compactHours(hours)}ч`
+          : "0";
+    const issueMark = bad && !sortedOverrides.length ? "!" : undefined;
+    const planLabel = planned.planned ? planned.planLabel || planned.label : undefined;
     return {
       ...base,
-      label: bad && !sortedOverrides.length
-        ? "!"
-        : absenceActive
-          ? absenceOverride?.reason === "sick_leave"
-            ? "Б"
-            : "ОТ"
-        : comboHours || overtimeHours
-          ? `${compactHours(manualBaseHours)}+${compactHours(overtimeHours + comboHours)}`
-          : hours
-            ? `${compactHours(hours)}ч`
-            : "0",
+      label: issueMark && planLabel ? planLabel : factLabel,
+      planLabel,
+      issueMark,
       kind: absenceActive
         ? absenceOverride?.reason === "vacation"
           ? "vacation"
@@ -1002,7 +1047,7 @@ function cellFor(
       comboEmployeeName: relatedNames.join(", "),
     };
   }
-  return plannedCellFor(e, d);
+  return plannedCellFor(e, d, planAnchorDate);
 }
 function Timesheet({
   employees,
@@ -1048,6 +1093,14 @@ function Timesheet({
   const factFor = (e: Employee, date: string) => facts.get(`${e.id}|${date}`);
   const overrideFor = (e: Employee, date: string) =>
     overrideMap.get(`${e.id}|${date}`) || [];
+  const planAnchorFor = (e: Employee) => {
+    if (e.scheduleKind !== "rolling") return undefined;
+    const workedDay = monthDays.find((d) => {
+      const fact = factFor(e, d.date);
+      return fact && fact.fact > 0;
+    });
+    return workedDay?.date || e.scheduleEffectiveFrom;
+  };
   const departments = Array.from(
     new Set(roster.map((e) => e.department || "Без подразделения")),
   ).sort((a, b) => a.localeCompare(b, "ru"));
@@ -1066,7 +1119,14 @@ function Timesheet({
   const monthTotal = (e: Employee) =>
     monthDays.reduce(
       (sum, d) =>
-        sum + cellFor(e, d, factFor(e, d.date), overrideFor(e, d.date)).hours,
+        sum +
+        cellFor(
+          e,
+          d,
+          factFor(e, d.date),
+          overrideFor(e, d.date),
+          planAnchorFor(e),
+        ).hours,
       0,
     );
   const visibleTotal = list.reduce((sum, e) => sum + monthTotal(e), 0);
@@ -1193,15 +1253,25 @@ function Timesheet({
                       d,
                       factFor(e, d.date),
                       overrideFor(e, d.date),
+                      planAnchorFor(e),
                     );
                     return (
                       <button
-                        className={`monthCell ${cell.kind} ${cell.label === "Н" ? "night" : ""} ${cell.label === "24" ? "full" : ""}`}
+                        className={`monthCell ${cell.kind} ${cell.planLabel === "Н" ? "night" : ""} ${cell.planLabel === "С" ? "full" : ""}`}
                         key={d.date}
                         onClick={() => setOpened({ employee: e, cell })}
                         title={`${e.name}, ${formatDate(cell.date)}`}
                       >
-                        {cell.label}
+                        {cell.planLabel && (cell.kind === "fact" || cell.issueMark) ? (
+                          <>
+                            <span className="cellPlan">{cell.planLabel}</span>
+                            <span className={cell.issueMark ? "cellIssue" : "cellFact"}>
+                              {cell.issueMark || cell.label}
+                            </span>
+                          </>
+                        ) : (
+                          <span className="cellMain">{cell.label}</span>
+                        )}
                       </button>
                     );
                   })}
@@ -1239,6 +1309,7 @@ function Timesheet({
                       item.employee_id === row.employee_id &&
                       item.work_date === row.work_date,
                   ),
+                  planAnchorFor(opened.employee),
                 ),
               });
           }}
@@ -1258,6 +1329,7 @@ function Timesheet({
                       item.employee_id === row.employee_id &&
                       item.work_date === row.work_date,
                   ),
+                  planAnchorFor(opened.employee),
                 ),
               });
           }}
