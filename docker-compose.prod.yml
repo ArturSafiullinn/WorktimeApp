@@ -3,7 +3,7 @@ services:
     networks:
       - default
       - grandrial_web
-    ports: []
+    ports: !reset []
 
 networks:
   grandrial_web:
