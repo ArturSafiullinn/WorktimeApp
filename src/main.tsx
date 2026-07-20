@@ -3829,6 +3829,29 @@ function Departments({
     setEmployee(updated);
     setMessage("Сотрудник обновлён");
   };
+  const deleteDepartment = async () => {
+    if (!selected) return;
+    const count = Number(selected.employee_count) || 0;
+    if (count > 0) {
+      setMessage("Нельзя удалить подразделение, пока в нём есть сотрудники");
+      return;
+    }
+    if (!confirm(`Удалить подразделение "${selected.name}"?`)) return;
+    const response = await fetch(`/api/departments/${selected.id}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      setMessage(error.error || "Не удалось удалить подразделение");
+      return;
+    }
+    setDepartments(
+      departments.filter((d) => Number(d.id) !== Number(selected.id)),
+    );
+    setSelected(null);
+    setEmployee(null);
+    setMessage("Подразделение удалено");
+  };
   const members = selected
     ? employees.filter((e) => Number(e.departmentId) === Number(selected.id))
     : [];
@@ -3910,7 +3933,22 @@ function Departments({
             <button className="outline" onClick={() => setSelected(null)}>
               Закрыть
             </button>
-            {message && <span className="success">{message}</span>}
+            {Number(selected.employee_count) === 0 && (
+              <button className="danger mini" onClick={deleteDepartment}>
+                Удалить
+              </button>
+            )}
+            {message && (
+              <span
+                className={
+                  message.includes("Нельзя") || message.includes("Не удалось")
+                    ? "error"
+                    : "success"
+                }
+              >
+                {message}
+              </span>
+            )}
           </div>
           <div className="departmentPeople">
             <div className="panel memberList">

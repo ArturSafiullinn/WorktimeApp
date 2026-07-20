@@ -510,6 +510,41 @@ app.patch("/api/departments/:id", async (req, res) => {
     client.release();
   }
 });
+app.delete("/api/departments/:id", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.params.id);
+    await client.query("BEGIN");
+    const employeeCount = await client.query(
+      `SELECT count(*)::int count FROM employees WHERE department_id=$1`,
+      [id],
+    );
+    if (employeeCount.rows[0]?.count > 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        error: "Нельзя удалить подразделение, пока в нём есть сотрудники",
+      });
+    }
+    await client.query(`DELETE FROM department_schedules WHERE department_id=$1`, [
+      id,
+    ]);
+    const { rows } = await client.query(
+      `DELETE FROM departments WHERE id=$1 RETURNING id`,
+      [id],
+    );
+    if (!rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Подразделение не найдено" });
+    }
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
 app.use(express.static(distDir));
 app.get(/^(?!\/api).*/, (_req, res) => {
   res.sendFile(path.join(distDir, "index.html"));
