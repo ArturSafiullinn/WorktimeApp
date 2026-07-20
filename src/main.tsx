@@ -197,6 +197,10 @@ const loadAccountsFromApi = async () => {
   replaceAccounts(next);
   return next;
 };
+const nullableNumber = (value: unknown) => {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : undefined;
+};
 const employeeFromApi = (e: any): Employee => ({
   id: e.id,
   name: e.name,
@@ -208,7 +212,7 @@ const employeeFromApi = (e: any): Employee => ({
   department: e.department,
   schedule: formatScheduleText(e.schedule || "График не назначен"),
   departmentId: Number(e.department_id),
-  scheduleId: Number(e.schedule_id),
+  scheduleId: nullableNumber(e.schedule_id),
   scheduleCode: e.schedule_code,
   scheduleKind: e.schedule_kind,
   schedulePattern: e.cycle_pattern,
@@ -220,7 +224,9 @@ const employeeFromApi = (e: any): Employee => ({
   fact: Number(e.fact) || 0,
   total: Number(e.total) || 0,
   combo: Number(e.combo) || 0,
-  status: e.status || ("Требует проверки" as Status),
+  status:
+    e.status ||
+    (nullableNumber(e.schedule_id) ? "Требует проверки" : "ОК" as Status),
   date: e.date,
   recordCount: Number(e.recordCount) || 0,
   issues: e.issues || ["Посещения за выбранную дату ещё не загружены"],
@@ -842,10 +848,23 @@ const localDateString = (date = new Date()) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 const isTodayRecord = (e?: Pick<Employee, "date"> | null) =>
   !!e?.date && e.date === localDateString();
-const isActionableProblem = (e: Pick<Employee, "date" | "status">) =>
-  e.status !== "ОК" && !isTodayRecord(e);
+const hasAssignedSchedule = (
+  e: Pick<Employee, "scheduleId" | "scheduleCode" | "schedule">,
+) => {
+  const schedule = formatScheduleText(e.schedule || "");
+  return (
+    !!e.scheduleId ||
+    !!e.scheduleCode ||
+    (!!schedule && schedule !== "График не назначен")
+  );
+};
+const isActionableProblem = (
+  e: Pick<Employee, "date" | "status" | "scheduleId" | "scheduleCode" | "schedule">,
+) => e.status !== "ОК" && hasAssignedSchedule(e) && !isTodayRecord(e);
 const visibleStatus = (e: Employee): Status =>
-  isTodayRecord(e) && e.status !== "ОК" ? "ОК" : e.status;
+  (!hasAssignedSchedule(e) || isTodayRecord(e)) && e.status !== "ОК"
+    ? "ОК"
+    : e.status;
 const normalizeSearch = (value: string) =>
   value
     .toLowerCase()
@@ -928,12 +947,12 @@ function plannedCellFor(
   planAnchorDate?: string,
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
+  if (!hasAssignedSchedule(e))
+    return { ...base, label: "", kind: "unknown", ...blankCellHours };
   if (e.needsReview && e.reviewNote?.toLowerCase().includes("отпуск"))
     return { ...base, label: "ОТ", kind: "vacation", ...blankCellHours };
   if (e.needsReview && !e.scheduleCode)
     return { ...base, label: "?", kind: "review", ...blankCellHours };
-  if (!e.scheduleCode)
-    return { ...base, label: "", kind: "unknown", ...blankCellHours };
   if (e.scheduleCode === "standard" || e.scheduleKind === "weekly") {
     const wd = new Date(d.date).getDay();
     if (wd === 0 || wd === 6)
