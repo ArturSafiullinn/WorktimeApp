@@ -3058,7 +3058,7 @@ function EmployeeDirectory({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         department_id: selected.departmentId,
-        schedule_id: selected.scheduleId,
+        schedule_id: selected.scheduleId || null,
         effective_from: from,
       }),
     });
@@ -3166,7 +3166,9 @@ function EmployeeDirectory({
                   onChange={(e) =>
                     setSelected({
                       ...selected,
-                      scheduleId: Number(e.target.value),
+                      scheduleId: e.target.value
+                        ? Number(e.target.value)
+                        : undefined,
                     })
                   }
                 >

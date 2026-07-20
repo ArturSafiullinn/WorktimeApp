@@ -211,16 +211,22 @@ app.patch("/api/employees/:id", async (req, res) => {
         `UPDATE employees SET department_id=COALESCE($2,department_id),active=COALESCE($3,active),updated_at=now() WHERE id=$1`,
         [id, department_id ?? null, active ?? null],
       );
-    if (schedule_id != null) {
+    if (Object.prototype.hasOwnProperty.call(req.body, "schedule_id")) {
       const from = effective_from || new Date().toISOString().slice(0, 10);
       await client.query(
         `UPDATE employee_schedules SET effective_to=$2::date-1 WHERE employee_id=$1 AND effective_from<$2 AND(effective_to IS NULL OR effective_to>=$2)`,
         [id, from],
       );
-      await client.query(
-        `INSERT INTO employee_schedules(employee_id,schedule_id,effective_from,source)VALUES($1,$2,$3,'manual') ON CONFLICT(employee_id,effective_from)DO UPDATE SET schedule_id=excluded.schedule_id,source='manual',effective_to=NULL`,
-        [id, schedule_id, from],
-      );
+      if (schedule_id)
+        await client.query(
+          `INSERT INTO employee_schedules(employee_id,schedule_id,effective_from,source)VALUES($1,$2,$3,'manual') ON CONFLICT(employee_id,effective_from)DO UPDATE SET schedule_id=excluded.schedule_id,source='manual',effective_to=NULL`,
+          [id, schedule_id, from],
+        );
+      else
+        await client.query(
+          `DELETE FROM employee_schedules WHERE employee_id=$1 AND effective_from=$2 AND source='manual'`,
+          [id, from],
+        );
     }
     await client.query("COMMIT");
     res.json({ ok: true });
