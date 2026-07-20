@@ -809,6 +809,9 @@ type TimesheetCell = {
   overtimeHours: number;
   leaveMinutes: number;
   status?: Status;
+  issueLabel?: string;
+  rawEntry?: string;
+  rawExit?: string;
   planned?: boolean;
   override?: WorkOverride;
   overrides?: WorkOverride[];
@@ -941,6 +944,12 @@ const blankCellHours = { hours: 0, baseHours: 0, comboHours: 0, overtimeHours: 0
 const compactHours = (hours: number) => hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
 const normalizeTimeInput = (value: string) =>
   value.replace(/[^\d:]/g, "").slice(0, 5);
+const issueLabelFor = (status?: Status) =>
+  status === "Нет входа"
+    ? "нет входа"
+    : status === "Нет выхода"
+      ? "нет выхода"
+      : "нет отметок";
 function plannedCellFor(
   e: Employee,
   d: (typeof monthDays)[number],
@@ -1109,11 +1118,19 @@ function cellFor(
           : "0";
     const issueMark = bad && !sortedOverrides.length ? "!" : undefined;
     const planLabel = planned.planned ? planned.planLabel || planned.label : undefined;
+    const rawEntry = fact?.entry && fact.entry !== "—" ? fact.entry : undefined;
+    const rawExit =
+      fact?.exit && fact.exit !== "—" && fact.exit !== fact.entry
+        ? fact.exit
+        : undefined;
     return {
       ...base,
       label: issueMark && planLabel ? planLabel : factLabel,
       planLabel,
       issueMark,
+      issueLabel: issueMark ? issueLabelFor(fact?.status) : undefined,
+      rawEntry,
+      rawExit,
       kind: absenceActive
         ? absenceOverride?.reason === "vacation"
           ? "vacation"
@@ -1353,12 +1370,18 @@ function Timesheet({
                         onClick={() => setOpened({ employee: e, cell })}
                         title={`${e.name}, ${formatDate(cell.date)}`}
                       >
-                        {cell.planLabel && (cell.kind === "fact" || cell.issueMark) ? (
+                        {cell.issueMark ? (
+                          <>
+                            <span className="cellPlan">{cell.planLabel || cell.label}</span>
+                            <span className="cellIssue">{cell.issueLabel}</span>
+                            <span className="cellTimes">
+                              {cell.rawEntry || "—"}→{cell.rawExit || "—"}
+                            </span>
+                          </>
+                        ) : cell.planLabel && cell.kind === "fact" ? (
                           <>
                             <span className="cellPlan">{cell.planLabel}</span>
-                            <span className={cell.issueMark ? "cellIssue" : "cellFact"}>
-                              {cell.issueMark || cell.label}
-                            </span>
+                            <span className="cellFact">{cell.label}</span>
                           </>
                         ) : (
                           <span className="cellMain">{cell.label}</span>
@@ -1580,6 +1603,18 @@ function TimesheetCellModal({
                     : "Требует проверки"}
             </b>
           </div>
+          {opened.cell.issueMark && (
+            <>
+              <div>
+                <span>Первое прикладывание</span>
+                <b>{opened.cell.rawEntry || "Нет отметки"}</b>
+              </div>
+              <div>
+                <span>Последнее прикладывание</span>
+                <b>{opened.cell.rawExit || "Нет отметки"}</b>
+              </div>
+            </>
+          )}
           <div>
             <span>Основное время</span>
             <b>{fmt(opened.cell.baseHours)}</b>
