@@ -946,10 +946,22 @@ const normalizeTimeInput = (value: string) =>
   value.replace(/[^\d:]/g, "").slice(0, 5);
 const issueLabelFor = (status?: Status) =>
   status === "Нет входа"
-    ? "нет входа"
+    ? "нет вх."
     : status === "Нет выхода"
-      ? "нет выхода"
-      : "нет отметок";
+      ? "нет вых."
+      : "нет отм.";
+const issueTitleFor = (cell: TimesheetCell, employeeName: string) =>
+  cell.issueMark
+    ? [
+        employeeName,
+        formatDate(cell.date),
+        cell.status,
+        `первое: ${cell.rawEntry || "нет"}`,
+        `последнее: ${cell.rawExit || "нет"}`,
+      ]
+        .filter(Boolean)
+        .join(", ")
+    : `${employeeName}, ${formatDate(cell.date)}`;
 function plannedCellFor(
   e: Employee,
   d: (typeof monthDays)[number],
@@ -1368,7 +1380,7 @@ function Timesheet({
                         className={`monthCell ${cell.kind} ${cell.planLabel === "Н" ? "night" : ""} ${cell.planLabel === "С" ? "full" : ""}`}
                         key={d.date}
                         onClick={() => setOpened({ employee: e, cell })}
-                        title={`${e.name}, ${formatDate(cell.date)}`}
+                        title={issueTitleFor(cell, e.name)}
                       >
                         {cell.issueMark ? (
                           <>
