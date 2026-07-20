@@ -204,12 +204,18 @@ app.patch("/api/employees/:id", async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id),
-      { department_id, schedule_id, effective_from, active } = req.body;
+      { department_id, schedule_id, effective_from, active, clear_review } =
+        req.body;
     await client.query("BEGIN");
     if (department_id != null || active != null)
       await client.query(
         `UPDATE employees SET department_id=COALESCE($2,department_id),active=COALESCE($3,active),updated_at=now() WHERE id=$1`,
         [id, department_id ?? null, active ?? null],
+      );
+    if (clear_review)
+      await client.query(
+        `UPDATE employees SET needs_review=false,review_note=NULL,updated_at=now() WHERE id=$1`,
+        [id],
       );
     if (Object.prototype.hasOwnProperty.call(req.body, "schedule_id")) {
       const from = effective_from || new Date().toISOString().slice(0, 10);

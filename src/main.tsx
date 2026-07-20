@@ -3109,6 +3109,7 @@ function EmployeeDirectory({
         department_id: selected.departmentId,
         schedule_id: selected.scheduleId || null,
         effective_from: from,
+        clear_review: true,
       }),
     });
     if (!response.ok) {
@@ -3126,8 +3127,16 @@ function EmployeeDirectory({
       ...selected,
       department: department?.name || selected.department,
       schedule: schedule ? schedule.name : selected.schedule,
+      needsReview: false,
+      reviewNote: undefined,
     };
-    setEmployees(employees.map((e) => (e.id === updated.id ? updated : e)));
+    setEmployees(
+      employees.map((e) =>
+        e.id === updated.id
+          ? { ...e, ...updated, needsReview: false, reviewNote: undefined }
+          : e,
+      ),
+    );
     setSelected(updated);
     setMessage("Сохранено в PostgreSQL");
   };
@@ -3830,6 +3839,7 @@ function Departments({
         department_id: employee.departmentId,
         schedule_id: employee.scheduleId || null,
         effective_from: effectiveFrom,
+        clear_review: true,
       }),
     });
     if (!r.ok) {
@@ -3846,6 +3856,8 @@ function Departments({
       ...employee,
       department: dep?.name || employee.department,
       schedule: schedule ? schedule.name : employee.schedule,
+      needsReview: false,
+      reviewNote: undefined,
     };
     setEmployees(
       employees.map((e) =>
@@ -3856,6 +3868,8 @@ function Departments({
               department: updated.department,
               scheduleId: updated.scheduleId,
               schedule: updated.schedule,
+              needsReview: false,
+              reviewNote: undefined,
             }
           : e,
       ),
