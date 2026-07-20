@@ -170,6 +170,33 @@ const loadAccounts = (): Record<string, Account> => {
 const saveAccounts = (next: Record<string, Account>) =>
   localStorage.setItem("accounts", JSON.stringify(next));
 const accounts: Record<string, Account> = loadAccounts();
+const normalizeAccountRows = (rows: any[]): Record<string, Account> =>
+  Object.fromEntries(
+    rows.map((row) => [
+      row.login,
+      {
+        pass: row.pass,
+        role: row.role,
+        name: row.name,
+        employeeIds: Array.isArray(row.employeeIds) ? row.employeeIds : [],
+        departmentIds: Array.isArray(row.departmentIds)
+          ? row.departmentIds
+          : [],
+      },
+    ]),
+  );
+const replaceAccounts = (next: Record<string, Account>) => {
+  Object.keys(accounts).forEach((key) => delete accounts[key]);
+  Object.assign(accounts, next);
+  saveAccounts(next);
+};
+const loadAccountsFromApi = async () => {
+  const response = await fetch("/api/accounts");
+  if (!response.ok) throw new Error("Не удалось загрузить пользователей");
+  const next = normalizeAccountRows(await response.json());
+  replaceAccounts(next);
+  return next;
+};
 const employeeFromApi = (e: any): Employee => ({
   id: e.id,
   name: e.name,
@@ -241,10 +268,16 @@ function App() {
     () => localStorage.getItem("role") as Role,
   );
   const [user, setUser] = useState(localStorage.getItem("user") || "");
+  const [, setAccountRevision] = useState(0);
   const [page, setPage] = useState("dashboard");
   const [employees, setEmployees] = useState<Employee[]>(base);
   const [selected, setSelected] = useState<Employee | null>(null);
   const [menu, setMenu] = useState(false);
+  const refreshAccounts = async () => {
+    const next = await loadAccountsFromApi();
+    setAccountRevision((revision) => revision + 1);
+    return next;
+  };
   const assignedIds = accounts[user]?.employeeIds;
   const assignedDepartmentIds = accounts[user]?.departmentIds;
   const hasBossScope =
@@ -273,9 +306,13 @@ function App() {
       )
       .catch(() => setEmployees([]));
   }, []);
+  useEffect(() => {
+    refreshAccounts().catch(() => {});
+  }, []);
   if (!role)
     return (
       <Login
+        refreshAccounts={refreshAccounts}
         onLogin={(u, r) => {
           setUser(u);
           setRole(r);
@@ -476,8 +513,15 @@ function App() {
               />
             )
           )}
-          {page === "admin" && <Admin employees={employees} />}
-          {page === "account" && <AccountSettings login={user} />}
+          {page === "admin" && (
+            <Admin employees={employees} onAccountsChange={refreshAccounts} />
+          )}
+          {page === "account" && (
+            <AccountSettings
+              login={user}
+              onAccountsChange={refreshAccounts}
+            />
+          )}
           {page === "departments" && (
             <Departments employees={employees} setEmployees={setEmployees} />
           )}
@@ -486,13 +530,20 @@ function App() {
     </div>
   );
 }
-function Login({ onLogin }: { onLogin: (u: string, r: Role) => void }) {
+function Login({
+  onLogin,
+  refreshAccounts,
+}: {
+  onLogin: (u: string, r: Role) => void;
+  refreshAccounts: () => Promise<Record<string, Account>>;
+}) {
   const [u, setU] = useState("boss"),
     [p, setP] = useState("boss"),
     [showPassword, setShowPassword] = useState(false),
     [err, setErr] = useState("");
-  const submit = (e: React.FormEvent) => {
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    await refreshAccounts().catch(() => {});
     if (accounts[u]?.pass === p) onLogin(u, accounts[u].role);
     else setErr("Неверный логин или пароль");
   };
@@ -3152,7 +3203,13 @@ function EmployeeDirectory({
     </>
   );
 }
-function Admin({ employees }: { employees: Employee[] }) {
+function Admin({
+  employees,
+  onAccountsChange,
+}: {
+  employees: Employee[];
+  onAccountsChange: () => Promise<Record<string, Account>>;
+}) {
   const emptyUser = {
     login: "",
     name: "",
@@ -3165,6 +3222,11 @@ function Admin({ employees }: { employees: Employee[] }) {
   const [selected, setSelected] = useState(emptyUser);
   const [originalLogin, setOriginalLogin] = useState("");
   const [message, setMessage] = useState("");
+  useEffect(() => {
+    onAccountsChange()
+      .then((next) => setRows({ ...next }))
+      .catch(() => {});
+  }, []);
   const uniqueEmployees = employees.filter(
     (e, index, list) => list.findIndex((x) => x.id === e.id) === index,
   );
@@ -3176,11 +3238,32 @@ function Admin({ employees }: { employees: Employee[] }) {
       }, new Map<number, string>())
       .entries(),
   ).sort((a, b) => a[1].localeCompare(b[1], "ru"));
-  const persist = (next: Record<string, Account>) => {
-    Object.keys(accounts).forEach((key) => delete accounts[key]);
-    Object.assign(accounts, next);
-    saveAccounts(next);
+  const persist = async (
+    login: string,
+    account: Account,
+    nextLogin = login,
+  ) => {
+    const response = await fetch(`/api/accounts/${encodeURIComponent(login)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        login: nextLogin,
+        name: account.name,
+        pass: account.pass,
+        role: account.role,
+        employeeIds: account.employeeIds || [],
+        departmentIds: account.departmentIds || [],
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.error || "Не удалось сохранить пользователя");
+    }
+    const result = await response.json();
+    const next = normalizeAccountRows(result.accounts || []);
+    replaceAccounts(next);
     setRows({ ...next });
+    return next;
   };
   const edit = (login: string) => {
     setSelected({
@@ -3199,7 +3282,7 @@ function Admin({ employees }: { employees: Employee[] }) {
     setOriginalLogin("");
     setMessage("");
   };
-  const save = () => {
+  const save = async () => {
     const login = selected.login.trim();
     if (!login || !selected.name.trim() || (!originalLogin && !selected.pass.trim())) {
       setMessage("Заполните логин, имя и пароль");
@@ -3216,9 +3299,7 @@ function Admin({ employees }: { employees: Employee[] }) {
       setMessage("Нужен хотя бы один администратор");
       return;
     }
-    const next = { ...rows };
-    if (originalLogin && originalLogin !== login) delete next[originalLogin];
-    next[login] = {
+    const account = {
       name: selected.name.trim(),
       pass: selected.pass.trim() || rows[originalLogin]?.pass || "",
       role: selected.role,
@@ -3226,19 +3307,26 @@ function Admin({ employees }: { employees: Employee[] }) {
       departmentIds:
         selected.role === "boss" ? selected.departmentIds : undefined,
     };
-    persist(next);
+    try {
+      const next = await persist(originalLogin || login, account, login);
+      await onAccountsChange().catch(() => {});
+      setRows({ ...next });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось сохранить");
+      return;
+    }
     setOriginalLogin(login);
     setSelected({
       login,
-      name: next[login].name,
+      name: account.name,
       pass: "",
-      role: next[login].role,
-      employeeIds: next[login].employeeIds || [],
-      departmentIds: next[login].departmentIds || [],
+      role: account.role,
+      employeeIds: account.employeeIds || [],
+      departmentIds: account.departmentIds || [],
     });
     setMessage("Пользователь сохранён");
   };
-  const remove = () => {
+  const remove = async () => {
     if (!originalLogin) return;
     if (Object.keys(rows).length <= 1) {
       setMessage("Нельзя удалить последнего пользователя");
@@ -3251,9 +3339,20 @@ function Admin({ employees }: { employees: Employee[] }) {
       setMessage("Нельзя удалить последнего администратора");
       return;
     }
-    const next = { ...rows };
-    delete next[originalLogin];
-    persist(next);
+    const response = await fetch(
+      `/api/accounts/${encodeURIComponent(originalLogin)}`,
+      { method: "DELETE" },
+    );
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      setMessage(error.error || "Не удалось удалить пользователя");
+      return;
+    }
+    const result = await response.json();
+    const next = normalizeAccountRows(result.accounts || []);
+    replaceAccounts(next);
+    setRows({ ...next });
+    await onAccountsChange().catch(() => {});
     reset();
     setMessage("Пользователь удалён");
   };
@@ -3420,7 +3519,7 @@ function Admin({ employees }: { employees: Employee[] }) {
             </div>
           )}
           {message && (
-            <div className={message.includes("Заполните") || message.includes("есть") || message.includes("Нельзя") ? "error" : "success"}>
+            <div className={message.includes("Заполните") || message.includes("есть") || message.includes("Нельзя") || message.includes("Не удалось") ? "error" : "success"}>
               {message}
             </div>
           )}
@@ -3437,14 +3536,20 @@ function Admin({ employees }: { employees: Employee[] }) {
     </>
   );
 }
-function AccountSettings({ login }: { login: string }) {
+function AccountSettings({
+  login,
+  onAccountsChange,
+}: {
+  login: string;
+  onAccountsChange: () => Promise<Record<string, Account>>;
+}) {
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [repeat, setRepeat] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
   const account = accounts[login];
-  const save = () => {
+  const save = async () => {
     if (!account) {
       setMessage("Учетная запись не найдена");
       return;
@@ -3465,9 +3570,25 @@ function AccountSettings({ login }: { login: string }) {
       ...accounts,
       [login]: { ...account, pass: next.trim() },
     };
-    Object.keys(accounts).forEach((key) => delete accounts[key]);
-    Object.assign(accounts, updated);
-    saveAccounts(updated);
+    const response = await fetch(`/api/accounts/${encodeURIComponent(login)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        login,
+        name: account.name,
+        pass: next.trim(),
+        role: account.role,
+        employeeIds: account.employeeIds || [],
+        departmentIds: account.departmentIds || [],
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      setMessage(error.error || "Не удалось изменить пароль");
+      return;
+    }
+    replaceAccounts(updated);
+    await onAccountsChange().catch(() => {});
     setCurrent("");
     setNext("");
     setRepeat("");

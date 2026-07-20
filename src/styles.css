@@ -19,3 +19,121 @@
 .datePickerField{position:relative;display:flex;align-items:center}.datePickerField>input:first-child{width:100%;padding-right:42px}.datePickerField button{position:absolute;right:4px;top:4px;width:34px;height:34px;border:0;border-left:1px solid #edf0ee;background:#fff;color:#587168;display:grid;place-items:center}.datePickerField button svg{width:16px}.nativeDateInput{position:absolute;right:0;bottom:0;width:1px;height:1px;opacity:0;pointer-events:none}
 .openPeriods{border-top:1px solid var(--line);border-bottom:1px solid var(--line);padding:14px 0;margin:14px 0}.openPeriods h3{font-size:13px;margin:0 0 8px}.openPeriod{border:1px solid #edf0ee;border-radius:8px;padding:10px;margin-top:8px;background:#fbfdfc}.openPeriod b,.openPeriod small{display:block;font-size:10px}.openPeriod small{color:#687770;margin-top:4px;line-height:1.45}.openPeriod label{margin:10px 0!important}.openPeriodActions{display:flex;gap:8px}.openPeriodActions button{flex:1}.openPeriodActions .danger{justify-content:center}
 
+@media(max-width:760px){
+  html,body{overflow-x:hidden}
+  body{background:#f3f5f4}
+  button,input,select,textarea{max-width:100%}
+  aside{width:min(292px,86vw);padding:22px 14px}
+  nav button{min-height:44px;padding:11px 12px}
+  header{padding:0 12px}
+  header>div:first-of-type{min-width:0}
+  header>div:first-of-type b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:calc(100vw - 120px)}
+  .hamb{width:42px;height:42px;display:grid;place-items:center;flex:0 0 auto}
+  .headerRight .avatar{width:36px;height:36px}
+  section{width:100%;padding:20px 12px 84px}
+  .pageHead{margin-bottom:18px}
+  .hero h1,.pageHead h1,.detailHead h1{font-size:22px;line-height:1.2}
+  .hero p,.pageHead p,.detailHead p{font-size:12px;line-height:1.55}
+  .stats,.timesheetSummary{grid-template-columns:1fr 1fr;gap:8px}
+  .stat{min-width:0;padding:14px 12px;border-radius:10px}
+  .stat b{font-size:20px;line-height:1.15;overflow-wrap:anywhere}
+  .stat span,.stat small{line-height:1.35}
+  .panel{border-radius:10px}
+  .panelHead{align-items:flex-start;gap:10px;padding:15px 13px 10px}
+  .panelHead .link{padding:8px 0;white-space:nowrap}
+  .personRow{display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:10px}
+  .personRow>div{min-width:0}
+  .personRow b,.personRow small{overflow:hidden;text-overflow:ellipsis}
+  .personRow small{white-space:nowrap}
+  .personRow>svg{display:none}
+  .personRow .status{grid-column:2/4;justify-self:start;margin-top:-2px}
+  .quickRow{padding:12px 14px}
+  .quickRow>div{min-width:0}
+  .quickRow b,.quickRow small{overflow-wrap:anywhere}
+  .toolbar{grid-template-columns:1fr;gap:8px}
+  .toolbar select,.toolbar .outline,.search{grid-column:auto;width:100%;min-height:44px}
+  .notice{padding:13px;gap:9px}
+  .notice svg{flex:0 0 auto}
+  .detailHead{display:grid;grid-template-columns:58px 1fr;gap:12px}
+  .detailHead .avatar.xl{width:58px;height:58px;font-size:16px}
+  .detailHead>div:nth-child(2){min-width:0}
+  .detailHead .status{grid-column:2;margin:0;justify-self:start}
+  .event{grid-template-columns:44px 10px minmax(0,1fr)}
+  .calc>div{gap:14px}
+  .calc>div span{min-width:0}
+  .historyItem{padding:10px 15px 18px}
+  .edit,.editor,.actions,.calc,.summary{padding:16px}
+  .editPerson{align-items:flex-start}
+  .editPerson>div{min-width:0}
+  .editPerson b,.editPerson small{overflow-wrap:anywhere}
+  .approvalTop{padding:17px}
+  .summary>div{grid-template-columns:1fr}
+  .summary span{border-right:0;border-bottom:1px solid var(--line)}
+  .summary span:last-child{border-bottom:0}
+  .adminRow{display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:10px;padding:13px}
+  .adminRow>div{min-width:0}
+  .adminRow b,.adminRow small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .adminRow>svg{display:none}
+  .adminRow .role{grid-column:2/4;justify-self:start}
+  .adminRow button{grid-column:3;grid-row:1}
+  .directoryList{max-height:420px}
+  .directoryList>button,.memberList>button,.staffList button{padding:12px}
+  .directoryList>button>span:nth-child(2),.memberList>button>span:nth-child(2),.staffList button>span:nth-child(2){min-width:0}
+  .directoryList b,.directoryList small,.memberList b,.memberList small,.staffList b,.staffList small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .departmentEditor.expanded{gap:12px;padding:16px}
+  .departmentEditor.expanded .primary,.departmentEditor.expanded .outline,.departmentEditor.expanded label{width:100%;min-width:0}
+  .departmentEditor label.check{align-items:flex-start;padding-bottom:0}
+  .dep{padding:18px;min-height:128px}
+  .dep h2{padding-right:28px;overflow-wrap:anywhere}
+  .importBox{padding:22px 14px}
+  .fileButton{width:100%}
+  .importResult .panelHead{display:block}
+  .importResult .primary{width:100%;margin-top:12px}
+  .timesheetLegend{gap:8px 10px;font-size:9px;line-height:1.3}
+  .timesheetDepartmentHead{display:block;padding:15px 13px}
+  .timesheetDepartmentHead>b{display:inline-flex;margin-top:10px}
+  .monthGridWrap{margin:0 -12px;overflow:auto;-webkit-overflow-scrolling:touch;scrollbar-width:thin}
+  .monthGrid{grid-template-columns:minmax(168px,168px) repeat(31,30px) 54px;min-width:1152px}
+  .monthGridHead>div,.monthCell{min-height:38px}
+  .employeeCol{box-shadow:1px 0 0 #dde3e0}
+  .employeeName{gap:7px;padding:6px 8px}
+  .employeeName .avatar{width:28px;height:28px;font-size:10px}
+  .employeeName b{font-size:10px}
+  .employeeName small{max-width:112px;font-size:8px}
+  .dayHead b{font-size:10px}
+  .dayHead span{font-size:7px}
+  .monthCell{font-size:8px;padding:3px 1px}
+  .cellPlan{font-size:7px}
+  .cellFact,.cellMain,.cellIssue{font-size:8px}
+  .totalCol{font-size:9px}
+  .cellModalShade{align-items:end;padding:10px}
+  .cellModal{width:100%;max-height:calc(100dvh - 20px);border-radius:12px;padding:18px}
+  .cellModal h2{font-size:18px;line-height:1.25}
+  .cellFacts>div,.correctionItem{display:block}
+  .cellFacts b,.correctionItem .danger{margin-top:5px}
+  .correctionItem .danger{width:100%}
+  .staffList{max-height:360px;overflow:auto}
+  .staffMonth{grid-template-columns:repeat(3,1fr);gap:7px;padding:0 12px 14px}
+  .staffMonth button{min-height:62px;padding:8px}
+  .staffMonth b{font-size:13px}
+  .staffMonth small{font-size:8px}
+  .openPeriodActions{flex-direction:column}
+  .login{min-height:100dvh;background:#fff}
+  .loginForm{min-height:100dvh;padding:24px 20px 20px;justify-content:flex-start}
+  .mobileLogo{margin-bottom:38px}
+  .loginForm>div:nth-child(2){margin-top:0}
+  .loginForm h2{font-size:25px;line-height:1.2}
+  .loginForm label{margin:13px 0}
+  .loginForm input,.passwordField{min-height:46px}
+  .test{margin-top:22px;margin-bottom:0}
+  .test button{min-height:38px;font-size:10px}
+}
+
+@media(max-width:390px){
+  section{padding-left:10px;padding-right:10px}
+  .stats,.timesheetSummary{grid-template-columns:1fr}
+  .staffMonth{grid-template-columns:repeat(2,1fr)}
+  .monthGridWrap{margin-left:-10px;margin-right:-10px}
+  .loginForm{padding-left:18px;padding-right:18px}
+}
+

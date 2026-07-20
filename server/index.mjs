@@ -11,6 +11,103 @@ const isExcludedFromTimesheet = (name) =>
     .toLowerCase()
     .replace(/ё/g, "е")
     .includes("сафиуллин");
+const defaultAccounts = {
+  admin: { pass: "admin", role: "admin", name: "Анна Викторовна" },
+  observer: { pass: "observer", role: "observer", name: "Олег Сергеевич" },
+  boss: { pass: "boss", role: "boss", name: "Михаил Петрович" },
+  boss_msp: {
+    pass: "boss_msp",
+    role: "boss",
+    name: "Начальник МСП",
+    employeeIds: [
+      120, 121, 122, 127, 191, 192, 193, 198, 200, 204, 206, 207, 211, 212,
+      213, 214, 215, 218, 232, 244, 276, 277, 298, 325, 332, 340, 343, 358,
+      363, 384, 398,
+    ],
+  },
+  boss_sklad: {
+    pass: "boss_sklad",
+    role: "boss",
+    name: "Начальник производственного склада",
+    employeeIds: [107, 108, 109, 111, 113, 157, 294, 339, 379, 380, 406],
+  },
+  boss_glav_sklad: {
+    pass: "boss_glav_sklad",
+    role: "boss",
+    name: "Начальник главного склада",
+    employeeIds: [129, 130, 133, 135, 337, 383],
+  },
+  boss_liteyka_press: {
+    pass: "boss_liteyka_press",
+    role: "boss",
+    name: "Начальник литейки и прессового",
+    employeeIds: [
+      161, 165, 167, 171, 172, 261, 265, 268, 269, 270, 271, 346, 368, 389,
+      403, 404, 407, 408,
+    ],
+  },
+  boss_otk: {
+    pass: "boss_otk",
+    role: "boss",
+    name: "Начальник ОТК",
+    employeeIds: [119, 333, 336],
+  },
+  boss_ohrana: {
+    pass: "boss_ohrana",
+    role: "boss",
+    name: "Начальник охраны",
+    employeeIds: [251, 252, 254, 255, 256, 257, 258, 259, 395],
+  },
+  boss_remont: {
+    pass: "boss_remont",
+    role: "boss",
+    name: "Начальник ремонтной службы",
+    employeeIds: [145, 156, 284, 326, 359],
+  },
+  boss_shih: {
+    pass: "boss_shih",
+    role: "boss",
+    name: "Начальник ШИХ",
+    employeeIds: [102, 143, 144, 146, 147, 149, 150, 151, 152, 154, 300],
+  },
+  boss_electro: {
+    pass: "boss_electro",
+    role: "boss",
+    name: "Начальник электроцеха",
+    employeeIds: [234, 235, 237, 238],
+  },
+  boss_termopak: {
+    pass: "boss_termopak",
+    role: "boss",
+    name: "Начальник термопака",
+    employeeIds: [295, 297, 319, 371],
+  },
+};
+const ensureAccountsTable = async () => {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS app_accounts(login TEXT PRIMARY KEY,full_name TEXT NOT NULL,password TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN('admin','observer','boss')),employee_ids JSONB NOT NULL DEFAULT '[]'::jsonb,department_ids JSONB NOT NULL DEFAULT '[]'::jsonb,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+  );
+  for (const [login, account] of Object.entries(defaultAccounts)) {
+    await pool.query(
+      `INSERT INTO app_accounts(login,full_name,password,role,employee_ids,department_ids)VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb)ON CONFLICT(login)DO NOTHING`,
+      [
+        login,
+        account.name,
+        account.pass,
+        account.role,
+        JSON.stringify(account.employeeIds || []),
+        JSON.stringify(account.departmentIds || []),
+      ],
+    );
+  }
+};
+const accountRows = async () => {
+  await ensureAccountsTable();
+  const { rows } = await pool.query(
+    `SELECT login,full_name name,password pass,role,employee_ids "employeeIds",department_ids "departmentIds" FROM app_accounts ORDER BY login`,
+  );
+  return rows;
+};
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.get("/api/health", async (_q, res) => {
@@ -19,6 +116,76 @@ app.get("/api/health", async (_q, res) => {
     res.json({ ok: true, ...r.rows[0] });
   } catch (e) {
     res.status(503).json({ ok: false, error: e.message });
+  }
+});
+app.get("/api/accounts", async (_req, res) => {
+  try {
+    res.json(await accountRows());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+app.put("/api/accounts/:login", async (req, res) => {
+  try {
+    const originalLogin = String(req.params.login || "").trim();
+    const login = String(req.body?.login || originalLogin).trim();
+    const name = String(req.body?.name || "").trim();
+    const pass = String(req.body?.pass || "").trim();
+    const role = String(req.body?.role || "");
+    const employeeIds = Array.isArray(req.body?.employeeIds)
+      ? req.body.employeeIds.map(Number).filter(Number.isFinite)
+      : [];
+    const departmentIds = Array.isArray(req.body?.departmentIds)
+      ? req.body.departmentIds.map(Number).filter(Number.isFinite)
+      : [];
+    if (!login || !name || !pass || !["admin", "observer", "boss"].includes(role))
+      return res.status(400).json({ error: "Заполните логин, имя, пароль и роль" });
+    await ensureAccountsTable();
+    if (login !== originalLogin) {
+      const exists = await pool.query(
+        `SELECT 1 FROM app_accounts WHERE login=$1`,
+        [login],
+      );
+      if (exists.rows.length)
+        return res.status(409).json({ error: "Такой логин уже есть" });
+      await pool.query(`DELETE FROM app_accounts WHERE login=$1`, [originalLogin]);
+    }
+    await pool.query(
+      `INSERT INTO app_accounts(login,full_name,password,role,employee_ids,department_ids)VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb)ON CONFLICT(login)DO UPDATE SET full_name=excluded.full_name,password=excluded.password,role=excluded.role,employee_ids=excluded.employee_ids,department_ids=excluded.department_ids,updated_at=now()`,
+      [
+        login,
+        name,
+        pass,
+        role,
+        JSON.stringify(role === "boss" ? employeeIds : []),
+        JSON.stringify(role === "boss" ? departmentIds : []),
+      ],
+    );
+    res.json({ ok: true, accounts: await accountRows() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+app.delete("/api/accounts/:login", async (req, res) => {
+  try {
+    const login = String(req.params.login || "").trim();
+    await ensureAccountsTable();
+    const { rows } = await pool.query(
+      `SELECT login,role FROM app_accounts ORDER BY login`,
+    );
+    if (rows.length <= 1)
+      return res.status(400).json({ error: "Нельзя удалить последнего пользователя" });
+    const target = rows.find((row) => row.login === login);
+    if (!target) return res.status(404).json({ error: "Пользователь не найден" });
+    if (
+      target.role === "admin" &&
+      rows.filter((row) => row.role === "admin").length <= 1
+    )
+      return res.status(400).json({ error: "Нельзя удалить последнего администратора" });
+    await pool.query(`DELETE FROM app_accounts WHERE login=$1`, [login]);
+    res.json({ ok: true, accounts: await accountRows() });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 app.get("/api/employees", async (req, res) => {
