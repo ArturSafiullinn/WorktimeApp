@@ -846,6 +846,18 @@ const isActionableProblem = (e: Pick<Employee, "date" | "status">) =>
   e.status !== "ОК" && !isTodayRecord(e);
 const visibleStatus = (e: Employee): Status =>
   isTodayRecord(e) && e.status !== "ОК" ? "ОК" : e.status;
+const normalizeSearch = (value: string) =>
+  value
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/\s+/g, " ")
+    .trim();
+const matchesSearch = (value: string, query: string) => {
+  const terms = normalizeSearch(query).split(" ").filter(Boolean);
+  if (!terms.length) return true;
+  const text = normalizeSearch(value);
+  return terms.every((term) => text.includes(term));
+};
 const addDays = (date: string, days: number) => {
   const [year, month, day] = date.split("-").map(Number);
   const d = new Date(year, month - 1, day + days);
@@ -2560,6 +2572,13 @@ function BossEmployeeCalendar({
       }, new Map<number, Employee>())
       .values(),
   );
+  const [q, setQ] = useState("");
+  const filteredRoster = roster.filter((e) =>
+    matchesSearch(
+      `${e.id} ${e.name} ${e.initials} ${e.department} ${e.schedule}`,
+      q,
+    ),
+  );
   const today = localDateString();
   const monthEnd = "2026-07-31";
   const openEndedHorizonDays = 365;
@@ -2580,7 +2599,10 @@ function BossEmployeeCalendar({
   >({});
   const [editingPeriodKey, setEditingPeriodKey] = useState("");
   const [periodModalOpen, setPeriodModalOpen] = useState(false);
-  const selected = roster.find((e) => e.id === selectedId) || roster[0];
+  const selected =
+    filteredRoster.find((e) => e.id === selectedId) ||
+    filteredRoster[0] ||
+    roster[0];
   const actorName = accounts[user]?.name || user || role;
   const loadOverrides = () =>
     fetch("/api/schedule-overrides?month=2026-07")
@@ -2761,10 +2783,18 @@ function BossEmployeeCalendar({
           <div className="panelHead">
             <div>
               <span className="eyebrow">СОТРУДНИКИ</span>
-              <h2>{roster.length} человек</h2>
+              <h2>{filteredRoster.length} человек</h2>
             </div>
           </div>
-          {roster.map((e) => (
+          <div className="search directorySearch staffSearch">
+            <Search />
+            <input
+              value={q}
+              onChange={(event) => setQ(event.target.value)}
+              placeholder="ФИО или подразделение"
+            />
+          </div>
+          {filteredRoster.map((e) => (
             <button
               key={e.id}
               className={selected?.id === e.id ? "selected" : ""}
@@ -3082,15 +3112,26 @@ function EmployeeDirectory({
     setSelected(updated);
     setMessage("Сохранено в PostgreSQL");
   };
-  const list = employees.filter((e) =>
-    `${e.name} ${e.department}`.toLowerCase().includes(q.toLowerCase()),
+  const uniqueEmployees = Array.from(
+    employees
+      .reduce((map, e) => {
+        if (!map.has(e.id) || !e.date) map.set(e.id, e);
+        return map;
+      }, new Map<number, Employee>())
+      .values(),
+  );
+  const list = uniqueEmployees.filter((e) =>
+    matchesSearch(
+      `${e.id} ${e.name} ${e.initials} ${e.department} ${e.schedule}`,
+      q,
+    ),
   );
   return (
     <>
       <PageHead
         eye="СПРАВОЧНИК"
         title="Сотрудники"
-        text={`${employees.length} активных сотрудников · подразделения и постоянные графики`}
+        text={`${uniqueEmployees.length} активных сотрудников · подразделения и постоянные графики`}
       />
       <div className="directoryLayout">
         <div>
@@ -3123,6 +3164,7 @@ function EmployeeDirectory({
                 <ChevronRight />
               </button>
             ))}
+            {!list.length && <div className="empty">Сотрудники не найдены</div>}
           </div>
         </div>
         <div>
