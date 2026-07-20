@@ -3801,12 +3801,15 @@ function Departments({
   };
   const saveEmployee = async () => {
     if (!employee) return;
+    const previous = employees.find((e) => e.id === employee.id);
+    const previousDepartmentId = Number(previous?.departmentId);
+    const nextDepartmentId = Number(employee.departmentId);
     const r = await fetch(`/api/employees/${employee.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         department_id: employee.departmentId,
-        schedule_id: employee.scheduleId,
+        schedule_id: employee.scheduleId || null,
         effective_from: effectiveFrom,
       }),
     });
@@ -3825,13 +3828,51 @@ function Departments({
       department: dep?.name || employee.department,
       schedule: schedule ? schedule.name : employee.schedule,
     };
-    setEmployees(employees.map((e) => (e.id === updated.id ? updated : e)));
+    setEmployees(
+      employees.map((e) =>
+        e.id === updated.id
+          ? {
+              ...e,
+              departmentId: updated.departmentId,
+              department: updated.department,
+              scheduleId: updated.scheduleId,
+              schedule: updated.schedule,
+            }
+          : e,
+      ),
+    );
+    if (
+      Number.isFinite(previousDepartmentId) &&
+      Number.isFinite(nextDepartmentId) &&
+      previousDepartmentId !== nextDepartmentId
+    ) {
+      const nextDepartments = departments.map((d) => {
+        const id = Number(d.id);
+        if (id === previousDepartmentId)
+          return {
+            ...d,
+            employee_count: Math.max(0, Number(d.employee_count || 0) - 1),
+          };
+        if (id === nextDepartmentId)
+          return {
+            ...d,
+            employee_count: Number(d.employee_count || 0) + 1,
+          };
+        return d;
+      });
+      setDepartments(nextDepartments);
+      if (selected)
+        setSelected(
+          nextDepartments.find((d) => Number(d.id) === Number(selected.id)) ||
+            selected,
+        );
+    }
     setEmployee(updated);
     setMessage("Сотрудник обновлён");
   };
   const deleteDepartment = async () => {
     if (!selected) return;
-    const count = Number(selected.employee_count) || 0;
+    const count = members.length;
     if (count > 0) {
       setMessage("Нельзя удалить подразделение, пока в нём есть сотрудники");
       return;
@@ -3853,7 +3894,15 @@ function Departments({
     setMessage("Подразделение удалено");
   };
   const members = selected
-    ? employees.filter((e) => Number(e.departmentId) === Number(selected.id))
+    ? Array.from(
+        employees
+          .filter((e) => Number(e.departmentId) === Number(selected.id))
+          .reduce((map, e) => {
+            if (!map.has(e.id) || !e.date) map.set(e.id, e);
+            return map;
+          }, new Map<number, Employee>())
+          .values(),
+      )
     : [];
   return (
     <>
@@ -3933,7 +3982,7 @@ function Departments({
             <button className="outline" onClick={() => setSelected(null)}>
               Закрыть
             </button>
-            {Number(selected.employee_count) === 0 && (
+            {members.length === 0 && (
               <button className="danger mini" onClick={deleteDepartment}>
                 Удалить
               </button>
@@ -4010,7 +4059,9 @@ function Departments({
                     onChange={(e) =>
                       setEmployee({
                         ...employee,
-                        scheduleId: Number(e.target.value),
+                        scheduleId: e.target.value
+                          ? Number(e.target.value)
+                          : undefined,
                       })
                     }
                   >
