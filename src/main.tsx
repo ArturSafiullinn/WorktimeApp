@@ -362,7 +362,7 @@ function App() {
             <Nav
               icon={<AlertTriangle />}
               label="Проблемы"
-              badge={String(scopedEmployees.filter((e) => e.status !== "ОК").length)}
+              badge={String(scopedEmployees.filter(isActionableProblem).length)}
               active={page === "problems"}
               onClick={() => go("problems")}
             />
@@ -646,7 +646,7 @@ function Dashboard({
   go: any;
   employees: Employee[];
 }) {
-  const problem = employees.filter((x) => x.status !== "ОК").length;
+  const problem = employees.filter(isActionableProblem).length;
   return (
     <>
       <div className="hero">
@@ -689,7 +689,7 @@ function Dashboard({
         <Stat
           n={String(problem)}
           label="Требуют внимания"
-          sub={`${employees.filter((e) => ["Нет входа", "Нет выхода", "Требует проверки"].includes(e.status)).length} критических`}
+          sub={`${employees.filter((e) => isActionableProblem(e) && ["Нет входа", "Нет выхода", "Требует проверки"].includes(e.status)).length} критических`}
           warn
         />
         <Stat
@@ -714,7 +714,7 @@ function Dashboard({
             </button>
           </div>
           {employees
-            .filter((x) => x.status !== "ОК")
+            .filter(isActionableProblem)
             .slice(0, 4)
             .map((e) => (
               <PersonRow e={e} key={e.id} onClick={() => go("detail", e)} />
@@ -767,7 +767,7 @@ const PersonRow = ({ e, onClick }: { e: Employee; onClick: any }) => (
         {formatTime(e.exit)}
       </small>
     </div>
-    <Status s={e.status} />
+    <Status s={visibleStatus(e)} />
     <ChevronRight />
   </button>
 );
@@ -840,6 +840,12 @@ const dayDiff = (from: string, to: string) =>
   Math.floor((Date.parse(to) - Date.parse(from)) / 86400000);
 const localDateString = (date = new Date()) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+const isTodayRecord = (e?: Pick<Employee, "date"> | null) =>
+  !!e?.date && e.date === localDateString();
+const isActionableProblem = (e: Pick<Employee, "date" | "status">) =>
+  e.status !== "ОК" && !isTodayRecord(e);
+const visibleStatus = (e: Employee): Status =>
+  isTodayRecord(e) && e.status !== "ОК" ? "ОК" : e.status;
 const addDays = (date: string, days: number) => {
   const [year, month, day] = date.split("-").map(Number);
   const d = new Date(year, month - 1, day + days);
@@ -1014,9 +1020,10 @@ function cellFor(
   if (fact || sortedOverrides.length) {
     const baseHours = fact?.fact || 0;
     const planned = plannedCellFor(e, d, planAnchorDate);
-    const bad = ["Нет входа", "Нет выхода", "Требует проверки"].includes(
-      fact?.status || "",
-    );
+    const bad =
+      !!fact &&
+      isActionableProblem(fact) &&
+      ["Нет входа", "Нет выхода", "Требует проверки"].includes(fact.status);
     if (
       planned.kind === "off" &&
       !sortedOverrides.length &&
@@ -1092,7 +1099,9 @@ function cellFor(
       leaveMinutes,
       status: sortedOverrides.length
         ? "Ручная корректировка"
-        : fact?.status || "Требует проверки",
+        : fact
+          ? visibleStatus(fact)
+          : "Требует проверки",
       override: sortedOverrides[sortedOverrides.length - 1],
       overrides: sortedOverrides,
       comboEmployeeName: relatedNames.join(", "),
@@ -1847,7 +1856,7 @@ function Problems({ employees, go }: any) {
       </div>
       <div className="panel problemList">
         {employees
-          .filter((e: Employee) => e.status !== "ОК")
+          .filter(isActionableProblem)
           .map((e: Employee) => (
             <PersonRow e={e} key={e.id} onClick={() => go("detail", e)} />
           ))}
@@ -1927,7 +1936,7 @@ function Detail({ e, employees = [], role, go, update }: any) {
             {e.department} · {formatScheduleText(e.schedule)}
           </p>
         </div>
-        <Status s={e.status} />
+        <Status s={visibleStatus(e)} />
       </div>
       <div className="detailGrid">
         <div>
@@ -2426,7 +2435,7 @@ function SkudImport({
     }
   };
   const rows = state.rows || [],
-    problems = rows.filter((e) => e.status !== "ОК").length;
+    problems = rows.filter(isActionableProblem).length;
   return (
     <>
       <PageHead
