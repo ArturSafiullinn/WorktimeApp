@@ -35,6 +35,7 @@ type Raw = {
   first: number | null;
   last: number | null;
   count: number;
+  overnightShift?: boolean;
 };
 type Schedule = {
   start: number;
@@ -77,7 +78,7 @@ function scheduleFor(id: number, department: string, date: string): Schedule {
     return { start: 0, end: 1440, lunch: 0, minLunch: 0, cleanTime: true };
   const d = department.toLowerCase();
   if (d.includes("литей") || d.includes("тпа"))
-    return { start: 480, end: 1200, lunch: 60, minLunch: 300 };
+    return { start: 480, end: 1200, lunch: 0, minLunch: 0 };
   return { start: 480, end: 1020, lunch: 60, minLunch: 300 };
 }
 function minutes(v: unknown): number | null {
@@ -161,7 +162,11 @@ function statusFor(
   return "ОК";
 }
 function calculate(raw: Raw): SkudEmployee {
-  const s = scheduleFor(raw.id, raw.department, raw.date),
+  const baseSchedule = scheduleFor(raw.id, raw.department, raw.date);
+  const s = {
+      ...baseSchedule,
+      overnight: baseSchedule.overnight || raw.overnightShift,
+    },
     issues: string[] = [];
   let duration =
     raw.first != null && raw.last != null ? raw.last - raw.first : 0;
@@ -175,7 +180,7 @@ function calculate(raw: Raw): SkudEmployee {
     raw.first != null &&
     raw.last != null
   ) {
-    if (s.cleanTime || s.overnight) fact = duration / 60;
+    if (s.cleanTime || s.overnight || s.lunch <= 0) fact = duration / 60;
     else {
       const worked = Math.max(
         0,
@@ -277,6 +282,47 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
     throw new Error("В файле не найдено ни одной записи сотрудника");
   const raw = [...map.values()],
     tails = new Set<string>();
+  for (const id of new Set(raw.map((r) => r.id))) {
+    const group = raw
+      .filter((r) => r.id === id)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    for (let i = 0; i < group.length - 1; i++) {
+      const head = group[i],
+        tail = group[i + 1];
+      const dayGap = (Date.parse(tail.date) - Date.parse(head.date)) / 86400000;
+      const headHasSingleMark =
+        head.count <= 1 ||
+        head.first == null ||
+        head.last == null ||
+        head.first === head.last;
+      const tailHasSingleMark =
+        tail.count <= 1 ||
+        tail.first == null ||
+        tail.last == null ||
+        tail.first === tail.last;
+      const entry = head.last,
+        exit = tail.first;
+      if (
+        dayGap !== 1 ||
+        !headHasSingleMark ||
+        !tailHasSingleMark ||
+        entry == null ||
+        exit == null ||
+        entry < 15 * 60 ||
+        exit > 11 * 60
+      )
+        continue;
+      const duration = 1440 - entry + exit;
+      if (duration >= 6 * 60 && duration <= 18 * 60) {
+        head.first = entry;
+        head.last = exit;
+        head.count = Math.max(2, head.count + tail.count);
+        head.overnightShift = true;
+        tails.add(`${tail.id}|${tail.date}`);
+        i++;
+      }
+    }
+  }
   // Суточники: как в WorkSchedule, склеиваем вход первого дня и выход следующего.
   for (const id of overnightIds) {
     const group = raw
