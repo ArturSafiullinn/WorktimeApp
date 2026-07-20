@@ -946,10 +946,10 @@ const normalizeTimeInput = (value: string) =>
   value.replace(/[^\d:]/g, "").slice(0, 5);
 const issueLabelFor = (status?: Status) =>
   status === "Нет входа"
-    ? "нет вх."
+    ? "нет входа"
     : status === "Нет выхода"
-      ? "нет вых."
-      : "нет отм.";
+      ? "нет выхода"
+      : "нет отметок";
 const issueTitleFor = (cell: TimesheetCell, employeeName: string) =>
   cell.issueMark
     ? [

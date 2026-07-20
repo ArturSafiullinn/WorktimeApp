@@ -129,6 +129,20 @@
   .test button{min-height:38px;font-size:10px}
 }
 
+.monthGrid{grid-template-columns:minmax(250px,1.45fr) repeat(31,minmax(66px,72px)) minmax(80px,.45fr);min-width:2520px}
+.monthCell{min-height:50px;padding:5px 4px}
+.cellIssue,.cellTimes{font-size:8px}
+
+@media(max-width:900px){
+  .monthGrid{grid-template-columns:minmax(220px,1.3fr) repeat(31,64px) 72px;min-width:2280px}
+}
+
+@media(max-width:760px){
+  .monthGrid{grid-template-columns:minmax(168px,168px) repeat(31,58px) 60px;min-width:2028px}
+  .monthGridHead>div,.monthCell{min-height:48px}
+  .monthCell{padding:4px 3px}
+}
+
 @media(max-width:390px){
   section{padding-left:10px;padding-right:10px}
   .stats,.timesheetSummary{grid-template-columns:1fr}
