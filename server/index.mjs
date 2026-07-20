@@ -278,6 +278,31 @@ app.post("/api/skud-days/import", async (req, res) => {
     await client.query(
       `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,
     );
+    const importedPairs = rows
+      .map((row) => ({
+        employee_id: Number(row.id),
+        work_date: String(row.date || ""),
+      }))
+      .filter(
+        (row) =>
+          Number.isFinite(row.employee_id) &&
+          /^\d{4}-\d{2}-\d{2}$/.test(row.work_date),
+      );
+    const importedEmployees = [
+      ...new Set(importedPairs.map((row) => row.employee_id)),
+    ];
+    const importedDates = importedPairs.map((row) => row.work_date).sort();
+    if (importedEmployees.length && importedDates.length) {
+      await client.query(
+        `DELETE FROM skud_days sd WHERE sd.source='skud_import' AND sd.employee_id=ANY($1::int[]) AND sd.work_date BETWEEN $2::date AND $3::date AND NOT EXISTS(SELECT 1 FROM jsonb_to_recordset($4::jsonb) AS incoming(employee_id int,work_date date) WHERE incoming.employee_id=sd.employee_id AND incoming.work_date=sd.work_date)`,
+        [
+          importedEmployees,
+          importedDates[0],
+          importedDates[importedDates.length - 1],
+          JSON.stringify(importedPairs),
+        ],
+      );
+    }
     for (const row of rows) {
       const dep = await client.query(
         `INSERT INTO departments(name,active)VALUES($1,true)ON CONFLICT(name)DO UPDATE SET active=departments.active RETURNING id`,

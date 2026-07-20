@@ -130,6 +130,7 @@
 }
 
 .monthGrid{grid-template-columns:minmax(250px,1.45fr) repeat(31,minmax(66px,72px)) minmax(80px,.45fr);min-width:2520px}
+.monthGridHead .employeeCol{display:flex;align-items:center;padding:0 12px;box-sizing:border-box;font-size:14px;color:#1d2a26}
 .monthCell{min-height:50px;padding:5px 4px}
 .cellIssue,.cellTimes{font-size:8px}
 
