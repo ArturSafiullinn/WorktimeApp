@@ -268,19 +268,26 @@ function App() {
     setAccountRevision((revision) => revision + 1);
     return next;
   };
-  const assignedIds = accounts[user]?.employeeIds;
-  const assignedDepartmentIds = accounts[user]?.departmentIds;
+  const assignedIds = accounts[user]?.employeeIds || [];
+  const assignedDepartmentIds = accounts[user]?.departmentIds || [];
   const hasBossScope =
     role === "boss" &&
     (Array.isArray(assignedIds) || Array.isArray(assignedDepartmentIds));
-  const scopedEmployees =
-    hasBossScope
-      ? employees.filter(
-          (e) =>
-            assignedIds?.includes(e.id) ||
-            assignedDepartmentIds?.includes(Number(e.departmentId)),
+  const scopedEmployees = (() => {
+    if (!hasBossScope) return employees;
+    const assignedEmployeeIds = new Set(assignedIds.map(Number));
+    const assignedDepartments = new Set(assignedDepartmentIds.map(Number));
+    const rosterRows = employees.filter((employee) => !employee.date);
+    const allowedEmployeeIds = new Set([
+      ...assignedEmployeeIds,
+      ...rosterRows
+        .filter((employee) =>
+          assignedDepartments.has(Number(employee.departmentId)),
         )
-      : employees;
+        .map((employee) => employee.id),
+    ]);
+    return employees.filter((employee) => allowedEmployeeIds.has(employee.id));
+  })();
   useEffect(() => {
     Promise.all([
       fetch("/api/employees").then((r) =>
