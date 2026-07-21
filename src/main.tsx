@@ -3320,6 +3320,8 @@ function Admin({
   const [selected, setSelected] = useState(emptyUser);
   const [originalLogin, setOriginalLogin] = useState("");
   const [message, setMessage] = useState("");
+  const [departmentQuery, setDepartmentQuery] = useState("");
+  const [employeeQuery, setEmployeeQuery] = useState("");
   useEffect(() => {
     onAccountsChange()
       .then((next) => setRows({ ...next }))
@@ -3336,6 +3338,12 @@ function Admin({
       }, new Map<number, string>())
       .entries(),
   ).sort((a, b) => a[1].localeCompare(b[1], "ru"));
+  const filteredDepartments = departments.filter(([id, name]) =>
+    matchesSearch(`${name} ${id}`, departmentQuery),
+  );
+  const filteredEmployees = uniqueEmployees.filter((e) =>
+    matchesSearch(`${e.name} ${e.department} ${e.id}`, employeeQuery),
+  );
   const persist = async (
     login: string,
     account: Account,
@@ -3374,11 +3382,15 @@ function Admin({
     });
     setOriginalLogin(login);
     setMessage("");
+    setDepartmentQuery("");
+    setEmployeeQuery("");
   };
   const reset = () => {
     setSelected(emptyUser);
     setOriginalLogin("");
     setMessage("");
+    setDepartmentQuery("");
+    setEmployeeQuery("");
   };
   const save = async () => {
     const login = selected.login.trim();
@@ -3557,8 +3569,16 @@ function Admin({
               </div>
               <div className="bossScopeSection">
                 <b>Подразделения</b>
+                <div className="search bossScopeSearch">
+                  <Search />
+                  <input
+                    value={departmentQuery}
+                    onChange={(event) => setDepartmentQuery(event.target.value)}
+                    placeholder="Найти подразделение"
+                  />
+                </div>
                 <div className="bossScopeList">
-                  {departments.map(([id, name]) => (
+                  {filteredDepartments.map(([id, name]) => (
                     <label key={id}>
                       <input
                         type="checkbox"
@@ -3588,13 +3608,24 @@ function Admin({
                       </span>
                     </label>
                   ))}
+                  {!filteredDepartments.length && (
+                    <div className="bossScopeEmpty">Подразделения не найдены</div>
+                  )}
                 </div>
               </div>
               <div className="bossScopeSection">
                 <b>Отдельные сотрудники</b>
                 <small>Для точечных исключений вне выбранных подразделений</small>
+                <div className="search bossScopeSearch">
+                  <Search />
+                  <input
+                    value={employeeQuery}
+                    onChange={(event) => setEmployeeQuery(event.target.value)}
+                    placeholder="Найти сотрудника или отдел"
+                  />
+                </div>
               <div className="bossScopeList">
-                {uniqueEmployees.map((e) => (
+                {filteredEmployees.map((e) => (
                   <label key={e.id}>
                     <input
                       type="checkbox"
@@ -3612,6 +3643,9 @@ function Admin({
                     </span>
                   </label>
                 ))}
+                {!filteredEmployees.length && (
+                  <div className="bossScopeEmpty">Сотрудники не найдены</div>
+                )}
                 </div>
               </div>
             </div>
