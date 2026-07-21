@@ -195,7 +195,7 @@ const employeeFromApi = (e: any): Employee => ({
     .join(""),
   department: e.department,
   schedule: formatScheduleText(e.schedule || "График не назначен"),
-  departmentId: Number(e.department_id),
+  departmentId: nullableNumber(e.department_id),
   scheduleId: nullableNumber(e.schedule_id),
   scheduleCode: e.schedule_code,
   scheduleKind: e.schedule_kind,
@@ -288,12 +288,22 @@ function App() {
       ),
       fetch("/api/skud-days?month=2026-07").then((r) => (r.ok ? r.json() : [])),
     ])
-      .then(([employeeRows, skudRows]) =>
+      .then(([employeeRows, skudRows]) => {
+        const rosterRows = employeeRows.map(employeeFromApi);
+        const departmentByEmployee = new Map(
+          rosterRows.map((employee) => [employee.id, employee.departmentId]),
+        );
         setEmployees([
-          ...employeeRows.map(employeeFromApi),
-          ...skudRows.map(employeeFromApi),
-        ]),
-      )
+          ...rosterRows,
+          ...skudRows.map((row: any) =>
+            employeeFromApi({
+              ...row,
+              department_id:
+                row.department_id ?? departmentByEmployee.get(Number(row.id)),
+            }),
+          ),
+        ]);
+      })
       .catch(() => setEmployees([]));
   }, []);
   useEffect(() => {
