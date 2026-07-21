@@ -110,6 +110,50 @@ const accountRows = async () => {
   );
   return rows;
 };
+const ensureScheduleOverrideTables = async () => {
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS schedule_overrides(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,start_time TIME NOT NULL,end_time TIME NOT NULL,reason TEXT NOT NULL,comment TEXT,changed_by TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_overrides DROP CONSTRAINT IF EXISTS schedule_overrides_employee_id_work_date_key`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_id INTEGER REFERENCES employees(id)`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_name TEXT`,
+  );
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS schedule_override_audit(id BIGSERIAL PRIMARY KEY,override_id BIGINT,action TEXT NOT NULL CHECK(action IN('created','deleted','restored')),employee_id INTEGER,work_date DATE,changed_by TEXT,action_by TEXT NOT NULL,snapshot JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_schedule_override_audit_lookup ON schedule_override_audit(created_at,changed_by,employee_id)`,
+  );
+};
+const overrideSelect = `id,employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by,leave_minutes,combo_hours::float combo_hours,overtime_hours::float overtime_hours,combo_employee_id,combo_employee_name,to_char(created_at,'YYYY-MM-DD HH24:MI') created_at`;
+const auditOverride = async (client, action, row, actionBy) => {
+  await client.query(
+    `INSERT INTO schedule_override_audit(override_id,action,employee_id,work_date,changed_by,action_by,snapshot)VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`,
+    [
+      row.id || null,
+      action,
+      row.employee_id || null,
+      row.work_date || null,
+      row.changed_by || null,
+      actionBy || row.changed_by || "user",
+      JSON.stringify(row),
+    ],
+  );
+};
 app.use(cors());
 app.use(express.json({ limit: "10mb" }));
 app.get("/api/health", async (_q, res) => {
@@ -347,26 +391,9 @@ app.post("/api/skud-days/import", async (req, res) => {
 app.get("/api/schedule-overrides", async (req, res) => {
   try {
     const month = String(req.query.month || new Date().toISOString().slice(0, 7));
-    await pool.query(
-      `ALTER TABLE schedule_overrides DROP CONSTRAINT IF EXISTS schedule_overrides_employee_id_work_date_key`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_id INTEGER REFERENCES employees(id)`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_name TEXT`,
-    );
+    await ensureScheduleOverrideTables();
     const { rows } = await pool.query(
-      `SELECT id,employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by,leave_minutes,combo_hours::float combo_hours,overtime_hours::float overtime_hours,combo_employee_id,combo_employee_name,to_char(created_at,'YYYY-MM-DD HH24:MI') created_at FROM schedule_overrides WHERE work_date>=($1 || '-01')::date AND work_date<(($1 || '-01')::date + interval '1 month') ORDER BY work_date,employee_id,id`,
+      `SELECT ${overrideSelect} FROM schedule_overrides WHERE work_date>=($1 || '-01')::date AND work_date<(($1 || '-01')::date + interval '1 month') ORDER BY work_date,employee_id,id`,
       [month],
     );
     res.json(rows);
@@ -374,7 +401,24 @@ app.get("/api/schedule-overrides", async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+app.get("/api/schedule-overrides/audit", async (req, res) => {
+  try {
+    const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+    const changedBy = String(req.query.changed_by || "").trim();
+    await ensureScheduleOverrideTables();
+    const params = [month];
+    if (changedBy) params.push(changedBy);
+    const { rows } = await pool.query(
+      `SELECT a.id,a.override_id,a.action,a.employee_id,e.full_name employee_name,d.name department,to_char(a.work_date,'YYYY-MM-DD') work_date,a.changed_by,a.action_by,a.snapshot,to_char(a.created_at,'YYYY-MM-DD HH24:MI') created_at FROM schedule_override_audit a LEFT JOIN employees e ON e.id=a.employee_id LEFT JOIN departments d ON d.id=e.department_id WHERE a.work_date>=($1 || '-01')::date AND a.work_date<(($1 || '-01')::date + interval '1 month')${changedBy ? " AND a.changed_by=$2" : ""} ORDER BY a.created_at DESC,a.id DESC LIMIT 500`,
+      params,
+    );
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.post("/api/schedule-overrides", async (req, res) => {
+  const client = await pool.connect();
   try {
     const {
       employee_id,
@@ -392,26 +436,10 @@ app.post("/api/schedule-overrides", async (req, res) => {
     } = req.body;
     if (!employee_id || !work_date || !start_time || !end_time)
       return res.status(400).json({ error: "Не хватает данных корректировки" });
-    await pool.query(
-      `ALTER TABLE schedule_overrides DROP CONSTRAINT IF EXISTS schedule_overrides_employee_id_work_date_key`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_id INTEGER REFERENCES employees(id)`,
-    );
-    await pool.query(
-      `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_name TEXT`,
-    );
-    const { rows } = await pool.query(
-      `INSERT INTO schedule_overrides(employee_id,work_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id,employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by,leave_minutes,combo_hours::float combo_hours,overtime_hours::float overtime_hours,combo_employee_id,combo_employee_name,to_char(created_at,'YYYY-MM-DD HH24:MI') created_at`,
+    await ensureScheduleOverrideTables();
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `INSERT INTO schedule_overrides(employee_id,work_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${overrideSelect}`,
       [
         employee_id,
         work_date,
@@ -427,12 +455,18 @@ app.post("/api/schedule-overrides", async (req, res) => {
         combo_employee_name?.trim() || null,
       ],
     );
+    await auditOverride(client, "created", rows[0], changed_by || "user");
+    await client.query("COMMIT");
     res.status(201).json(rows[0]);
   } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
     res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
   }
 });
 app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
+  const client = await pool.connect();
   try {
     const {
       employee_id,
@@ -441,10 +475,13 @@ app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
       end_time,
       comment,
       changed_by,
+      action_by,
       from_date,
     } = req.body;
     if (!employee_id || !reason || !start_time || !end_time || !comment)
       return res.status(400).json({ error: "Не хватает данных периода" });
+    await ensureScheduleOverrideTables();
+    await client.query("BEGIN");
     const params = [
       employee_id,
       reason,
@@ -454,27 +491,114 @@ app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
       changed_by || null,
       from_date || null,
     ];
-    const { rowCount } = await pool.query(
-      `DELETE FROM schedule_overrides WHERE employee_id=$1 AND reason=$2 AND start_time=$3::time AND end_time=$4::time AND comment=$5 AND($6::text IS NULL OR changed_by=$6) AND($7::date IS NULL OR work_date>=$7::date)`,
+    const { rows } = await client.query(
+      `SELECT ${overrideSelect} FROM schedule_overrides WHERE employee_id=$1 AND reason=$2 AND start_time=$3::time AND end_time=$4::time AND comment=$5 AND($6::text IS NULL OR changed_by=$6) AND($7::date IS NULL OR work_date>=$7::date)`,
       params,
     );
-    res.json({ ok: true, count: rowCount });
+    for (const row of rows) {
+      await auditOverride(client, "deleted", row, action_by || changed_by || "admin");
+    }
+    await client.query(
+      `DELETE FROM schedule_overrides WHERE id=ANY($1::bigint[])`,
+      [rows.map((row) => row.id)],
+    );
+    await client.query("COMMIT");
+    res.json({ ok: true, count: rows.length });
   } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
     res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
   }
 });
 app.delete("/api/schedule-overrides/:id", async (req, res) => {
+  const client = await pool.connect();
   try {
     const id = Number(req.params.id);
-    const { changed_by } = req.body || {};
-    const { rows } = await pool.query(
-      `DELETE FROM schedule_overrides WHERE id=$1 AND($2::text IS NULL OR changed_by=$2) RETURNING id`,
+    const { changed_by, action_by } = req.body || {};
+    await ensureScheduleOverrideTables();
+    await client.query("BEGIN");
+    const { rows } = await client.query(
+      `SELECT ${overrideSelect} FROM schedule_overrides WHERE id=$1 AND($2::text IS NULL OR changed_by=$2)`,
       [id, changed_by || null],
     );
-    if (!rows.length) return res.status(404).json({ error: "Правка не найдена" });
+    if (!rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Правка не найдена" });
+    }
+    await auditOverride(client, "deleted", rows[0], action_by || changed_by || "admin");
+    await client.query(`DELETE FROM schedule_overrides WHERE id=$1`, [id]);
+    await client.query("COMMIT");
     res.json({ ok: true });
   } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
     res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
+app.post("/api/schedule-overrides/audit/:id/restore", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.params.id);
+    const { action_by } = req.body || {};
+    await ensureScheduleOverrideTables();
+    await client.query("BEGIN");
+    const audit = await client.query(
+      `SELECT snapshot FROM schedule_override_audit WHERE id=$1 AND action='deleted'`,
+      [id],
+    );
+    if (!audit.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Удалённая правка не найдена" });
+    }
+    const row = audit.rows[0].snapshot;
+    const duplicate = await client.query(
+      `SELECT 1 FROM schedule_overrides WHERE employee_id=$1 AND work_date=$2::date AND start_time=$3::time AND end_time=$4::time AND reason=$5 AND comment IS NOT DISTINCT FROM $6 AND changed_by=$7 AND leave_minutes=$8 AND combo_hours=$9 AND overtime_hours=$10 AND combo_employee_id IS NOT DISTINCT FROM $11 AND combo_employee_name IS NOT DISTINCT FROM $12 LIMIT 1`,
+      [
+        row.employee_id,
+        row.work_date,
+        row.start_time,
+        row.end_time,
+        row.reason,
+        row.comment || null,
+        row.changed_by || action_by || "admin",
+        Math.max(0, Number(row.leave_minutes) || 0),
+        Math.max(0, Number(row.combo_hours) || 0),
+        Math.max(0, Number(row.overtime_hours) || 0),
+        row.combo_employee_id || null,
+        row.combo_employee_name || null,
+      ],
+    );
+    if (duplicate.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ error: "Такая правка уже есть в табеле" });
+    }
+    const inserted = await client.query(
+      `INSERT INTO schedule_overrides(employee_id,work_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${overrideSelect}`,
+      [
+        row.employee_id,
+        row.work_date,
+        row.start_time,
+        row.end_time,
+        row.reason,
+        row.comment || null,
+        row.changed_by || action_by || "admin",
+        Math.max(0, Number(row.leave_minutes) || 0),
+        Math.max(0, Number(row.combo_hours) || 0),
+        Math.max(0, Number(row.overtime_hours) || 0),
+        row.combo_employee_id || null,
+        row.combo_employee_name || null,
+      ],
+    );
+    await auditOverride(client, "restored", inserted.rows[0], action_by || "admin");
+    await client.query("COMMIT");
+    res.status(201).json(inserted.rows[0]);
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
   }
 });
 app.get("/api/departments", async (_q, res) => {

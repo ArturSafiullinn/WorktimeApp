@@ -14,6 +14,8 @@ ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2)
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_id INTEGER REFERENCES employees(id);
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_name TEXT;
+CREATE TABLE IF NOT EXISTS schedule_override_audit(id BIGSERIAL PRIMARY KEY,override_id BIGINT,action TEXT NOT NULL CHECK(action IN('created','deleted','restored')),employee_id INTEGER,work_date DATE,changed_by TEXT,action_by TEXT NOT NULL,snapshot JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now());
+CREATE INDEX IF NOT EXISTS idx_schedule_override_audit_lookup ON schedule_override_audit(created_at,changed_by,employee_id);
 CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date));
 CREATE INDEX IF NOT EXISTS idx_skud_days_lookup ON skud_days(employee_id,work_date);
 CREATE TABLE IF NOT EXISTS department_schedules(id BIGSERIAL PRIMARY KEY,department_id BIGINT NOT NULL REFERENCES departments(id),schedule_id BIGINT NOT NULL REFERENCES schedule_templates(id),effective_from DATE NOT NULL,effective_to DATE,source TEXT NOT NULL DEFAULT 'manual',UNIQUE(department_id,effective_from));

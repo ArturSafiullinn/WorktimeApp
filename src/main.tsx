@@ -399,6 +399,12 @@ function App() {
                 active={page === "departments"}
                 onClick={() => go("departments")}
               />
+              <Nav
+                icon={<History />}
+                label="Журнал"
+                active={page === "audit"}
+                onClick={() => go("audit")}
+              />
             </>
           )}
         </nav>
@@ -462,6 +468,7 @@ function App() {
               employees={scopedEmployees}
               role={role}
               go={go}
+              user={user}
               update={(v) =>
                 setEmployees(employees.map((x) => (x.id === v.id ? v : x)))
               }
@@ -519,6 +526,9 @@ function App() {
           )}
           {page === "departments" && (
             <Departments employees={employees} setEmployees={setEmployees} />
+          )}
+          {page === "audit" && role === "admin" && (
+            <AuditLog employees={employees} user={user} />
           )}
         </section>
       </main>
@@ -802,6 +812,19 @@ type WorkOverride = {
   combo_employee_id?: number;
   combo_employee_name?: string;
   created_at?: string;
+};
+type OverrideAudit = {
+  id: number;
+  override_id?: number;
+  action: "created" | "deleted" | "restored";
+  employee_id: number;
+  employee_name?: string;
+  department?: string;
+  work_date: string;
+  changed_by: string;
+  action_by: string;
+  snapshot: WorkOverride;
+  created_at: string;
 };
 const monthStart = "2026-07-01";
 const monthDays = Array.from({ length: 31 }, (_, i) => {
@@ -1553,6 +1576,7 @@ function TimesheetCellModal({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         changed_by: role === "admin" ? null : actorName,
+        action_by: actorName,
       }),
     });
     if (response.ok) onDelete(row);
@@ -1912,7 +1936,8 @@ function Problems({ employees, go }: any) {
     </>
   );
 }
-function Detail({ e, employees = [], role, go, update }: any) {
+function Detail({ e, employees = [], role, go, update, user }: any) {
+  const actorName = accounts[user]?.name || user || role;
   const [correction, setCorrection] = useState({
     date: e.date || "2026-07-06",
     start: e.entry !== "—" ? e.entry : "08:00",
@@ -1948,7 +1973,7 @@ function Detail({ e, employees = [], role, go, update }: any) {
         comment:
           correction.comment ||
           correctionReasons[correction.reason as CorrectionReason],
-        changed_by: role,
+        changed_by: actorName,
         combo_employee_id:
           correction.reason === "substitution" && correctionRelatedEmployee
             ? correctionRelatedEmployee.id
@@ -2705,6 +2730,7 @@ function BossEmployeeCalendar({
         end_time: sample.end_time,
         comment: sample.comment,
         changed_by: role === "admin" ? null : actorName,
+        action_by: actorName,
         from_date: fromDate || null,
       }),
     });
@@ -3668,6 +3694,160 @@ function Admin({
     </>
   );
 }
+const auditActionName = {
+  created: "Внес правку",
+  deleted: "Удалил правку",
+  restored: "Восстановил правку",
+};
+const auditReasonText = (reason?: string) =>
+  correctionReasons[reason as CorrectionReason] || reason || "Ручная правка";
+const auditOverrideText = (row?: WorkOverride) => {
+  if (!row) return "Нет данных правки";
+  const parts = [
+    auditReasonText(row.reason),
+    formatDate(row.work_date),
+    formatRange(row.start_time, row.end_time),
+  ];
+  if (Number(row.leave_minutes) > 0) parts.push(`отлучка ${row.leave_minutes} мин`);
+  if (Number(row.overtime_hours) > 0)
+    parts.push(`переработка ${fmt(Number(row.overtime_hours))}`);
+  if (Number(row.combo_hours) > 0)
+    parts.push(`совмещение ${fmt(Number(row.combo_hours))}`);
+  if (row.combo_employee_name) parts.push(row.combo_employee_name);
+  if (row.comment) parts.push(row.comment);
+  return parts.filter(Boolean).join(" · ");
+};
+function AuditLog({ employees, user }: { employees: Employee[]; user: string }) {
+  const [rows, setRows] = useState<OverrideAudit[]>([]);
+  const [actor, setActor] = useState("");
+  const [month, setMonth] = useState("2026-07");
+  const [message, setMessage] = useState("");
+  const actorName = accounts[user]?.name || user || "admin";
+  const load = async () => {
+    const params = new URLSearchParams({ month });
+    if (actor) params.set("changed_by", actor);
+    const response = await fetch(`/api/schedule-overrides/audit?${params}`);
+    if (!response.ok) {
+      setMessage("Не удалось загрузить журнал");
+      return;
+    }
+    setRows(await response.json());
+  };
+  useEffect(() => {
+    load().catch(() => setMessage("Не удалось загрузить журнал"));
+  }, [actor, month]);
+  const bossNames = Array.from(
+    new Set(
+      [
+        ...Object.values(accounts)
+          .filter((account) => account.role === "boss")
+          .map((account) => account.name),
+        ...rows.map((row) => row.changed_by),
+      ].filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b, "ru"));
+  const created = rows.filter((row) => row.action === "created").length;
+  const deleted = rows.filter((row) => row.action === "deleted").length;
+  const restored = rows.filter((row) => row.action === "restored").length;
+  const restore = async (row: OverrideAudit) => {
+    const response = await fetch(
+      `/api/schedule-overrides/audit/${row.id}/restore`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action_by: actorName }),
+      },
+    );
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      setMessage(error.error || "Не удалось восстановить правку");
+      return;
+    }
+    setMessage("Правка восстановлена");
+    await load();
+  };
+  return (
+    <>
+      <PageHead
+        eye="КОНТРОЛЬ"
+        title="Журнал правок"
+        text="Кто вносил, удалял и восстанавливал корректировки табеля"
+      />
+      <div className="stats auditStats">
+        <Stat n={String(rows.length)} label="Записей журнала" sub="за выбранный месяц" />
+        <Stat n={String(created)} label="Внесено" sub="новые корректировки" />
+        <Stat n={String(deleted)} label="Удалено" sub="можно восстановить" warn={deleted > 0} />
+        <Stat n={String(restored)} label="Восстановлено" sub="возврат из журнала" />
+      </div>
+      <div className="toolbar auditToolbar">
+        <select value={month} onChange={(event) => setMonth(event.target.value)}>
+          <option value="2026-07">07-2026</option>
+        </select>
+        <select value={actor} onChange={(event) => setActor(event.target.value)}>
+          <option value="">Все начальники</option>
+          {bossNames.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+        <button className="outline" onClick={load}>
+          Обновить
+        </button>
+      </div>
+      {message && (
+        <div className={message.includes("Не удалось") ? "error" : "success"}>
+          {message}
+        </div>
+      )}
+      <div className="panel auditPanel">
+        <div className="auditHead">
+          <span>Дата действия</span>
+          <span>Начальник</span>
+          <span>Сотрудник</span>
+          <span>Действие и правка</span>
+          <span></span>
+        </div>
+        {rows.map((row) => {
+          const employee =
+            row.employee_name ||
+            employees.find((e) => e.id === row.employee_id)?.name ||
+            `ID ${row.employee_id}`;
+          return (
+            <div className={`auditRow ${row.action}`} key={row.id}>
+              <span>
+                <b>{row.created_at}</b>
+                <small>{formatDate(row.work_date)}</small>
+              </span>
+              <span>
+                <b>{row.changed_by}</b>
+                <small>Действие: {row.action_by}</small>
+              </span>
+              <span>
+                <b>{employee}</b>
+                <small>{row.department || "Подразделение не указано"}</small>
+              </span>
+              <span>
+                <b>{auditActionName[row.action]}</b>
+                <small>{auditOverrideText(row.snapshot)}</small>
+              </span>
+              <span>
+                {row.action === "deleted" && (
+                  <button className="outline miniAction" onClick={() => restore(row)}>
+                    Восстановить
+                  </button>
+                )}
+              </span>
+            </div>
+          );
+        })}
+        {!rows.length && (
+          <div className="empty">За выбранный период действий не найдено</div>
+        )}
+      </div>
+    </>
+  );
+}
 function AccountSettings({
   login,
   onAccountsChange,
@@ -4255,6 +4435,7 @@ const title = (p: string) =>
       admin: "Пользователи",
       account: "Моя учетная запись",
       departments: "Подразделения",
+      audit: "Журнал",
     }) as any
   )[p];
 createRoot(document.getElementById("root")!).render(<App />);
