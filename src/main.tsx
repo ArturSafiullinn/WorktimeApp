@@ -348,15 +348,13 @@ function App() {
             active={page === "timesheet"}
             onClick={() => go("timesheet")}
           />
-          {role !== "observer" && (
-            <Nav
-              icon={<AlertTriangle />}
-              label="Проблемы"
-              badge={String(scopedEmployees.filter(isActionableProblem).length)}
-              active={page === "problems"}
-              onClick={() => go("problems")}
-            />
-          )}{" "}
+          <Nav
+            icon={<AlertTriangle />}
+            label="Проблемы"
+            badge={String(scopedEmployees.filter(isActionableProblem).length)}
+            active={page === "problems"}
+            onClick={() => go("problems")}
+          />{" "}
           {role === "boss" && (
             <>
               <Nav
@@ -955,6 +953,13 @@ const issueTitleFor = (cell: TimesheetCell, employeeName: string) =>
         .filter(Boolean)
         .join(", ")
     : `${employeeName}, ${formatDate(cell.date)}`;
+const cellTimeText = (cell: TimesheetCell) => {
+  const start = cell.rawEntry || cell.start;
+  const end = cell.rawExit || cell.end;
+  if (!start || !end || start === "—" || end === "—") return "";
+  if (["off", "vacation", "unknown"].includes(cell.kind)) return "";
+  return `${formatTime(start)}→${formatTime(end)}`;
+};
 function plannedCellFor(
   e: Employee,
   d: (typeof monthDays)[number],
@@ -1368,6 +1373,7 @@ function Timesheet({
                       overrideFor(e, d.date),
                       planAnchorFor(e),
                     );
+                    const timeText = cellTimeText(cell);
                     return (
                       <button
                         className={`monthCell ${cell.kind} ${cell.planLabel === "Н" ? "night" : ""} ${cell.planLabel === "С" ? "full" : ""}`}
@@ -1380,16 +1386,20 @@ function Timesheet({
                             <span className="cellPlan">{cell.planLabel || cell.label}</span>
                             <span className="cellIssue">{cell.issueLabel}</span>
                             <span className="cellTimes">
-                              {cell.rawEntry || "—"}→{cell.rawExit || "—"}
+                              {timeText || `${cell.rawEntry || "—"}→${cell.rawExit || "—"}`}
                             </span>
                           </>
                         ) : cell.planLabel && cell.kind === "fact" ? (
                           <>
                             <span className="cellPlan">{cell.planLabel}</span>
                             <span className="cellFact">{cell.label}</span>
+                            {timeText && <span className="cellTimes">{timeText}</span>}
                           </>
                         ) : (
-                          <span className="cellMain">{cell.label}</span>
+                          <>
+                            <span className="cellMain">{cell.label}</span>
+                            {timeText && <span className="cellTimes">{timeText}</span>}
+                          </>
                         )}
                       </button>
                     );
@@ -1609,7 +1619,7 @@ function TimesheetCellModal({
                     : "Требует проверки"}
             </b>
           </div>
-          {opened.cell.issueMark && (
+          {(opened.cell.rawEntry || opened.cell.rawExit) && (
             <>
               <div>
                 <span>Первое прикладывание</span>
