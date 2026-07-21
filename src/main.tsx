@@ -146,23 +146,7 @@ const loadAccounts = (): Record<string, Account> => {
     const stored = localStorage.getItem("accounts");
     if (!stored) return { ...defaultAccounts };
     const parsed = JSON.parse(stored);
-    return {
-      ...defaultAccounts,
-      ...parsed,
-      ...Object.fromEntries(
-        Object.entries(defaultAccounts)
-          .filter(([login]) => login.startsWith("boss_"))
-          .map(([login, account]) => [
-            login,
-            {
-              ...account,
-              ...(parsed[login] || {}),
-              employeeIds:
-                account.employeeIds || parsed[login]?.employeeIds || [],
-            },
-          ]),
-      ),
-    };
+    return parsed;
   } catch {
     return { ...defaultAccounts };
   }
@@ -456,7 +440,12 @@ function App() {
         </header>
         <section>
           {page === "dashboard" && (
-            <Dashboard role={role} go={go} employees={scopedEmployees} />
+            <Dashboard
+              role={role}
+              go={go}
+              employees={scopedEmployees}
+              accountName={accounts[user]?.name}
+            />
           )}{" "}
           {page === "timesheet" && (
             <Timesheet
@@ -543,8 +532,8 @@ function Login({
   onLogin: (u: string, r: Role) => void;
   refreshAccounts: () => Promise<Record<string, Account>>;
 }) {
-  const [u, setU] = useState("boss"),
-    [p, setP] = useState("boss"),
+  const [u, setU] = useState(""),
+    [p, setP] = useState(""),
     [showPassword, setShowPassword] = useState(false),
     [err, setErr] = useState("");
   const submit = async (e: React.FormEvent) => {
@@ -616,22 +605,6 @@ function Login({
         <button className="primary" type="submit">
           Войти <ChevronRight />
         </button>
-        <div className="test">
-          <b>Тестовые аккаунты</b>
-          {["boss", "observer", "admin"].map((x) => (
-            <button
-              type="button"
-              onClick={() => {
-                setU(x);
-                setP(x);
-              }}
-              key={x}
-            >
-              <span>{roleName[accounts[x].role as Role]}</span>
-              <code>{x}</code>
-            </button>
-          ))}
-        </div>
       </form>
     </div>
   );
@@ -647,25 +620,22 @@ function Dashboard({
   role,
   go,
   employees,
+  accountName,
 }: {
   role: Role;
   go: any;
   employees: Employee[];
+  accountName?: string;
 }) {
   const problem = employees.filter(isActionableProblem).length;
+  const displayName = accountName || roleName[role];
   return (
     <>
       <div className="hero">
         <div>
           <span className="eyebrow">ОБЗОР СМЕНЫ</span>
           <h1>
-            Добрый день,{" "}
-            {role === "boss"
-              ? "Михаил Петрович"
-              : role === "admin"
-                ? "Анна Викторовна"
-                : "Олег Сергеевич"}
-            !
+            Добрый день, {displayName}!
           </h1>
           <p>
             {role === "boss"

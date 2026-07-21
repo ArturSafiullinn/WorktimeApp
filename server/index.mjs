@@ -87,6 +87,8 @@ const ensureAccountsTable = async () => {
   await pool.query(
     `CREATE TABLE IF NOT EXISTS app_accounts(login TEXT PRIMARY KEY,full_name TEXT NOT NULL,password TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN('admin','observer','boss')),employee_ids JSONB NOT NULL DEFAULT '[]'::jsonb,department_ids JSONB NOT NULL DEFAULT '[]'::jsonb,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
   );
+  const { rows } = await pool.query(`SELECT COUNT(*)::int count FROM app_accounts`);
+  if (rows[0]?.count > 0) return;
   for (const [login, account] of Object.entries(defaultAccounts)) {
     await pool.query(
       `INSERT INTO app_accounts(login,full_name,password,role,employee_ids,department_ids)VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb)ON CONFLICT(login)DO NOTHING`,
