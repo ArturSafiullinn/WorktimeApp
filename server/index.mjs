@@ -1,11 +1,135 @@
 import express from "express";
 import cors from "cors";
+import nodemailer from "nodemailer";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { pool } from "./db.mjs";
 const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const distDir = path.resolve(__dirname, "../dist");
+const isProd = process.env.NODE_ENV === "production";
+const appSecret =
+  process.env.APP_SECRET ||
+  (isProd
+    ? null
+    : "dev-only-change-me-worktime-secret");
+if (!appSecret)
+  throw new Error("Set APP_SECRET in production before starting WorkTime API.");
+const allowedOrigins = (process.env.CORS_ORIGINS || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+const smtpConfig = {
+  host: (process.env.SMTP_HOST || "").trim(),
+  port: Number(process.env.SMTP_PORT || 0),
+  user: (process.env.SMTP_USER || "").trim(),
+  password: (process.env.SMTP_PASSWORD || "").trim(),
+  from: (process.env.SMTP_FROM || process.env.SMTP_USER || "").trim(),
+  secure: !["0", "false", "no", "off"].includes(
+    String(process.env.SMTP_USE_SSL ?? "1").toLowerCase(),
+  ),
+  startTls: ["1", "true", "yes", "on"].includes(
+    String(process.env.SMTP_USE_TLS || "0").toLowerCase(),
+  ),
+};
+const publicBaseUrl = (process.env.PUBLIC_BASE_URL || "").trim().replace(/\/$/, "");
+const smtpIsConfigured = () =>
+  !!(
+    smtpConfig.host &&
+    smtpConfig.port &&
+    smtpConfig.user &&
+    smtpConfig.password &&
+    smtpConfig.from
+  );
+const sendEmail = async ({ to, subject, text }) => {
+  if (!smtpIsConfigured()) throw new Error("SMTP is not configured");
+  const transporter = nodemailer.createTransport({
+    host: smtpConfig.host,
+    port: smtpConfig.port,
+    secure: smtpConfig.secure,
+    auth: { user: smtpConfig.user, pass: smtpConfig.password },
+    requireTLS: smtpConfig.startTls,
+  });
+  await transporter.sendMail({ from: smtpConfig.from, to, subject, text });
+};
+const publicApiPaths = new Set([
+  "/health",
+  "/login",
+  "/password-reset/request",
+  "/password-reset/confirm",
+]);
+const loginAttempts = new Map();
+const rateLimit = ({ windowMs, max }) => (req, res, next) => {
+  const key = `${req.ip}:${req.path}`;
+  const now = Date.now();
+  const bucket = loginAttempts.get(key) || { count: 0, resetAt: now + windowMs };
+  if (bucket.resetAt <= now) {
+    bucket.count = 0;
+    bucket.resetAt = now + windowMs;
+  }
+  bucket.count += 1;
+  loginAttempts.set(key, bucket);
+  if (bucket.count > max)
+    return res.status(429).json({ error: "Слишком много попыток. Повторите позже." });
+  next();
+};
+const signPayload = (payload) =>
+  crypto.createHmac("sha256", appSecret).update(payload).digest("base64url");
+const createToken = (account) => {
+  const payload = Buffer.from(
+    JSON.stringify({
+      login: account.login,
+      role: account.role,
+      name: account.name,
+      exp: Date.now() + 12 * 60 * 60 * 1000,
+    }),
+  ).toString("base64url");
+  return `${payload}.${signPayload(payload)}`;
+};
+const verifyToken = (token) => {
+  const [payload, signature] = String(token || "").split(".");
+  if (!payload || !signature || signature !== signPayload(payload)) return null;
+  try {
+    const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!data.login || Date.now() > Number(data.exp || 0)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+};
+const hashPassword = (password) => {
+  const salt = crypto.randomBytes(16).toString("base64url");
+  const hash = crypto.scryptSync(String(password), salt, 64).toString("base64url");
+  return `scrypt$${salt}$${hash}`;
+};
+const hashResetToken = (token) =>
+  crypto.createHash("sha256").update(String(token)).digest("hex");
+const normalizeEmail = (email) => {
+  const value = String(email || "").trim().toLowerCase();
+  if (!value) return "";
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value))
+    throw new Error("Некорректный email");
+  return value;
+};
+const validateNewPassword = (password) => {
+  if (String(password).length < 8)
+    throw new Error("Новый пароль должен быть не короче 8 символов");
+  if (String(password).trim() !== String(password))
+    throw new Error("Пароль не должен начинаться или заканчиваться пробелом");
+};
+const verifyPassword = (stored, password) => {
+  const value = String(stored || "");
+  const parts = value.split("$");
+  if (parts[0] !== "scrypt" || parts.length !== 3)
+    return value === String(password || "");
+  const expected = Buffer.from(parts[2], "base64url");
+  const actual = crypto.scryptSync(String(password || ""), parts[1], 64);
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+};
+const isPasswordHash = (password) => String(password || "").startsWith("scrypt$");
+const safeError = (res, status = 500, message = "Не удалось выполнить действие") =>
+  res.status(status).json({ error: message });
 const isExcludedFromTimesheet = (name) =>
   String(name || "")
     .toLowerCase()
@@ -87,6 +211,16 @@ const ensureAccountsTable = async () => {
   await pool.query(
     `CREATE TABLE IF NOT EXISTS app_accounts(login TEXT PRIMARY KEY,full_name TEXT NOT NULL,password TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN('admin','observer','boss')),employee_ids JSONB NOT NULL DEFAULT '[]'::jsonb,department_ids JSONB NOT NULL DEFAULT '[]'::jsonb,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
   );
+  await pool.query(`ALTER TABLE app_accounts ADD COLUMN IF NOT EXISTS email TEXT`);
+  await pool.query(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_app_accounts_email ON app_accounts(lower(email)) WHERE email IS NOT NULL AND email<>''`,
+  );
+  await pool.query(
+    `CREATE TABLE IF NOT EXISTS password_reset_tokens(id BIGSERIAL PRIMARY KEY,login TEXT NOT NULL REFERENCES app_accounts(login) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),expires_at TIMESTAMPTZ NOT NULL,used_at TIMESTAMPTZ)`,
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_login ON password_reset_tokens(login)`,
+  );
   const { rows } = await pool.query(`SELECT COUNT(*)::int count FROM app_accounts`);
   if (rows[0]?.count > 0) return;
   for (const [login, account] of Object.entries(defaultAccounts)) {
@@ -95,7 +229,7 @@ const ensureAccountsTable = async () => {
       [
         login,
         account.name,
-        account.pass,
+        hashPassword(account.pass),
         account.role,
         JSON.stringify(account.employeeIds || []),
         JSON.stringify(account.departmentIds || []),
@@ -106,9 +240,46 @@ const ensureAccountsTable = async () => {
 const accountRows = async () => {
   await ensureAccountsTable();
   const { rows } = await pool.query(
-    `SELECT login,full_name name,password pass,role,employee_ids "employeeIds",department_ids "departmentIds" FROM app_accounts ORDER BY login`,
+    `SELECT login,full_name name,email,role,employee_ids "employeeIds",department_ids "departmentIds" FROM app_accounts ORDER BY login`,
   );
   return rows;
+};
+const accountByLogin = async (login) => {
+  await ensureAccountsTable();
+  const { rows } = await pool.query(
+    `SELECT login,full_name name,email,password,role,employee_ids "employeeIds",department_ids "departmentIds" FROM app_accounts WHERE login=$1`,
+    [login],
+  );
+  return rows[0] || null;
+};
+const accountCanAccessEmployee = async (account, employeeId) => {
+  if (!account || account.role !== "boss") return true;
+  const assignedIds = Array.isArray(account.employeeIds)
+    ? account.employeeIds.map(Number)
+    : [];
+  if (assignedIds.includes(Number(employeeId))) return true;
+  const departmentIds = Array.isArray(account.departmentIds)
+    ? account.departmentIds.map(Number)
+    : [];
+  if (!departmentIds.length) return false;
+  const { rows } = await pool.query(
+    `SELECT 1 FROM employees WHERE id=$1 AND department_id=ANY($2::bigint[]) LIMIT 1`,
+    [employeeId, departmentIds],
+  );
+  return rows.length > 0;
+};
+const bossEmployeeFilter = (account, alias = "e") => {
+  if (!account || account.role !== "boss") return { sql: "", params: [] };
+  const employeeIds = Array.isArray(account.employeeIds)
+    ? account.employeeIds.map(Number).filter(Number.isFinite)
+    : [];
+  const departmentIds = Array.isArray(account.departmentIds)
+    ? account.departmentIds.map(Number).filter(Number.isFinite)
+    : [];
+  return {
+    sql: ` AND (${alias}.id=ANY($2::int[]) OR ${alias}.department_id=ANY($3::bigint[]))`,
+    params: [employeeIds, departmentIds],
+  };
 };
 const ensureScheduleOverrideTables = async () => {
   await pool.query(
@@ -139,7 +310,11 @@ const ensureScheduleOverrideTables = async () => {
     `CREATE INDEX IF NOT EXISTS idx_schedule_override_audit_lookup ON schedule_override_audit(created_at,changed_by,employee_id)`,
   );
 };
-const overrideSelect = `id,employee_id,to_char(work_date,'YYYY-MM-DD') work_date,to_char(start_time,'HH24:MI') start_time,to_char(end_time,'HH24:MI') end_time,reason,comment,changed_by,leave_minutes,combo_hours::float combo_hours,overtime_hours::float overtime_hours,combo_employee_id,combo_employee_name,to_char(created_at,'YYYY-MM-DD HH24:MI') created_at`;
+const overrideSelectFor = (alias = "") => {
+  const p = alias ? `${alias}.` : "";
+  return `${p}id,${p}employee_id,to_char(${p}work_date,'YYYY-MM-DD') work_date,to_char(${p}start_time,'HH24:MI') start_time,to_char(${p}end_time,'HH24:MI') end_time,${p}reason,${p}comment,${p}changed_by,${p}leave_minutes,${p}combo_hours::float combo_hours,${p}overtime_hours::float overtime_hours,${p}combo_employee_id,${p}combo_employee_name,to_char(${p}created_at,'YYYY-MM-DD HH24:MI') created_at`;
+};
+const overrideSelect = overrideSelectFor();
 const auditOverride = async (client, action, row, actionBy) => {
   await client.query(
     `INSERT INTO schedule_override_audit(override_id,action,employee_id,work_date,changed_by,action_by,snapshot)VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`,
@@ -154,38 +329,185 @@ const auditOverride = async (client, action, row, actionBy) => {
     ],
   );
 };
-app.use(cors());
-app.use(express.json({ limit: "10mb" }));
+app.use(
+  cors({
+    origin(origin, callback) {
+      if (!origin || !isProd || !allowedOrigins.length || allowedOrigins.includes(origin))
+        return callback(null, true);
+      callback(new Error("CORS origin is not allowed"));
+    },
+  }),
+);
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "5mb" }));
 app.get("/api/health", async (_q, res) => {
   try {
     const r = await pool.query("select current_database() db,now() time");
     res.json({ ok: true, ...r.rows[0] });
   } catch (e) {
-    res.status(503).json({ ok: false, error: e.message });
+    safeError(res, 503, "API недоступен");
   }
 });
-app.get("/api/accounts", async (_req, res) => {
+app.post("/api/login", rateLimit({ windowMs: 15 * 60 * 1000, max: 10 }), async (req, res) => {
+  try {
+    const login = String(req.body?.login || "").trim();
+    const password = String(req.body?.password || "");
+    const account = login ? await accountByLogin(login) : null;
+    if (!account || !verifyPassword(account.password, password))
+      return safeError(res, 401, "Неверный логин или пароль");
+    if (!isPasswordHash(account.password)) {
+      await pool.query(`UPDATE app_accounts SET password=$2,updated_at=now() WHERE login=$1`, [
+        account.login,
+        hashPassword(password),
+      ]);
+    }
+    res.json({
+      token: createToken(account),
+      account: {
+        login: account.login,
+        name: account.name,
+        email: account.email || "",
+        role: account.role,
+        employeeIds: account.employeeIds || [],
+        departmentIds: account.departmentIds || [],
+      },
+    });
+  } catch {
+    safeError(res, 500, "Не удалось войти");
+  }
+});
+app.post(
+  "/api/password-reset/request",
+  rateLimit({ windowMs: 15 * 60 * 1000, max: 5 }),
+  async (req, res) => {
+    const success = "Если email найден, ссылка для сброса пароля отправлена.";
+    try {
+      const email = normalizeEmail(req.body?.email);
+      if (!email) return res.json({ ok: true, message: success });
+      await ensureAccountsTable();
+      if (!smtpIsConfigured())
+        return safeError(
+          res,
+          500,
+          "Отправка писем пока не настроена. Укажите SMTP-настройки на сервере.",
+        );
+      const { rows } = await pool.query(
+        `SELECT login,full_name name,email FROM app_accounts WHERE lower(email)=lower($1) LIMIT 1`,
+        [email],
+      );
+      const account = rows[0];
+      if (account) {
+        const token = crypto.randomBytes(32).toString("base64url");
+        const baseUrl =
+          publicBaseUrl ||
+          `${req.protocol}://${req.get("host")}`.replace(/\/$/, "");
+        const resetLink = `${baseUrl}/?resetToken=${encodeURIComponent(token)}`;
+        await pool.query(
+          `INSERT INTO password_reset_tokens(login,token_hash,expires_at)VALUES($1,$2,now()+interval '60 minutes')`,
+          [account.login, hashResetToken(token)],
+        );
+        try {
+          await sendEmail({
+            to: email,
+            subject: "Сброс пароля Смена",
+            text:
+              `Здравствуйте, ${account.name || account.login}.\n\n` +
+              "Чтобы задать новый пароль, откройте ссылку:\n" +
+              `${resetLink}\n\n` +
+              "Ссылка действует 60 минут и может быть использована только один раз.\n" +
+              "Если вы не запрашивали сброс пароля, просто проигнорируйте это письмо.\n",
+          });
+        } catch {
+          await pool.query(
+            `UPDATE password_reset_tokens SET used_at=now() WHERE token_hash=$1`,
+            [hashResetToken(token)],
+          );
+          return safeError(
+            res,
+            502,
+            "Не удалось отправить письмо. Проверьте SMTP-настройки на сервере.",
+          );
+        }
+      }
+      res.json({ ok: true, message: success });
+    } catch (e) {
+      safeError(res, 400, e.message || "Не удалось отправить письмо");
+    }
+  },
+);
+app.post("/api/password-reset/confirm", async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const token = String(req.body?.token || "").trim();
+    const password = String(req.body?.password || "");
+    if (!token) throw new Error("Ссылка для сброса пароля некорректна");
+    validateNewPassword(password);
+    await ensureAccountsTable();
+    const { rows } = await pool.query(
+      `SELECT prt.id,prt.login,prt.expires_at,prt.used_at,aa.password FROM password_reset_tokens prt JOIN app_accounts aa ON aa.login=prt.login WHERE prt.token_hash=$1 LIMIT 1`,
+      [hashResetToken(token)],
+    );
+    const row = rows[0];
+    if (!row || row.used_at || new Date(row.expires_at).getTime() < Date.now())
+      throw new Error("Ссылка устарела или уже была использована");
+    if (verifyPassword(row.password, password))
+      throw new Error("Новый пароль должен отличаться от текущего");
+    await client.query("BEGIN");
+    await client.query(`UPDATE app_accounts SET password=$2,updated_at=now() WHERE login=$1`, [
+      row.login,
+      hashPassword(password),
+    ]);
+    await client.query(`UPDATE password_reset_tokens SET used_at=now() WHERE id=$1`, [
+      row.id,
+    ]);
+    await client.query("COMMIT");
+    res.json({ ok: true, message: "Пароль изменен. Теперь можно войти с новым паролем." });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    safeError(res, 400, e.message || "Не удалось изменить пароль");
+  } finally {
+    client.release();
+  }
+});
+app.use("/api", async (req, res, next) => {
+  if (publicApiPaths.has(req.path)) return next();
+  const token = String(req.headers.authorization || "").replace(/^Bearer\s+/i, "");
+  const verified = verifyToken(token);
+  if (!verified) return safeError(res, 401, "Требуется вход в систему");
+  const account = await accountByLogin(verified.login);
+  if (!account) return safeError(res, 401, "Требуется вход в систему");
+  req.account = account;
+  next();
+});
+const requireRole = (...roles) => (req, res, next) => {
+  if (!roles.includes(req.account?.role)) return safeError(res, 403, "Недостаточно прав");
+  next();
+};
+app.get("/api/accounts", requireRole("admin"), async (_req, res) => {
   try {
     res.json(await accountRows());
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
-app.put("/api/accounts/:login", async (req, res) => {
+app.put("/api/accounts/:login", requireRole("admin"), async (req, res) => {
   try {
     const originalLogin = String(req.params.login || "").trim();
     const login = String(req.body?.login || originalLogin).trim();
     const name = String(req.body?.name || "").trim();
     const pass = String(req.body?.pass || "").trim();
     const role = String(req.body?.role || "");
+    const email = normalizeEmail(req.body?.email);
     const employeeIds = Array.isArray(req.body?.employeeIds)
       ? req.body.employeeIds.map(Number).filter(Number.isFinite)
       : [];
     const departmentIds = Array.isArray(req.body?.departmentIds)
       ? req.body.departmentIds.map(Number).filter(Number.isFinite)
       : [];
-    if (!login || !name || !pass || !["admin", "observer", "boss"].includes(role))
-      return res.status(400).json({ error: "Заполните логин, имя, пароль и роль" });
+    if (!login || !name || !["admin", "observer", "boss"].includes(role))
+      return res.status(400).json({ error: "Заполните логин, имя и роль" });
+    const currentAccount = await accountByLogin(originalLogin);
+    if (!currentAccount && !pass)
+      return res.status(400).json({ error: "Для нового пользователя нужен пароль" });
     await ensureAccountsTable();
     if (login !== originalLogin) {
       const exists = await pool.query(
@@ -194,14 +516,17 @@ app.put("/api/accounts/:login", async (req, res) => {
       );
       if (exists.rows.length)
         return res.status(409).json({ error: "Такой логин уже есть" });
-      await pool.query(`DELETE FROM app_accounts WHERE login=$1`, [originalLogin]);
+      if (currentAccount)
+        await pool.query(`DELETE FROM app_accounts WHERE login=$1`, [originalLogin]);
     }
+    const storedPassword = pass ? hashPassword(pass) : currentAccount?.password;
     await pool.query(
-      `INSERT INTO app_accounts(login,full_name,password,role,employee_ids,department_ids)VALUES($1,$2,$3,$4,$5::jsonb,$6::jsonb)ON CONFLICT(login)DO UPDATE SET full_name=excluded.full_name,password=excluded.password,role=excluded.role,employee_ids=excluded.employee_ids,department_ids=excluded.department_ids,updated_at=now()`,
+      `INSERT INTO app_accounts(login,full_name,email,password,role,employee_ids,department_ids)VALUES($1,$2,$3,$4,$5,$6::jsonb,$7::jsonb)ON CONFLICT(login)DO UPDATE SET full_name=excluded.full_name,email=excluded.email,password=excluded.password,role=excluded.role,employee_ids=excluded.employee_ids,department_ids=excluded.department_ids,updated_at=now()`,
       [
         login,
         name,
-        pass,
+        email || null,
+        storedPassword,
         role,
         JSON.stringify(role === "boss" ? employeeIds : []),
         JSON.stringify(role === "boss" ? departmentIds : []),
@@ -212,7 +537,7 @@ app.put("/api/accounts/:login", async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
-app.delete("/api/accounts/:login", async (req, res) => {
+app.delete("/api/accounts/:login", requireRole("admin"), async (req, res) => {
   try {
     const login = String(req.params.login || "").trim();
     await ensureAccountsTable();
@@ -234,19 +559,37 @@ app.delete("/api/accounts/:login", async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+app.put("/api/me/password", async (req, res) => {
+  try {
+    const current = String(req.body?.current || "");
+    const next = String(req.body?.next || "");
+    if (!verifyPassword(req.account.password, current))
+      return safeError(res, 400, "Текущий пароль указан неверно");
+    if (next.length < 8)
+      return safeError(res, 400, "Новый пароль должен быть не короче 8 символов");
+    await pool.query(`UPDATE app_accounts SET password=$2,updated_at=now() WHERE login=$1`, [
+      req.account.login,
+      hashPassword(next),
+    ]);
+    res.json({ ok: true });
+  } catch {
+    safeError(res, 400, "Не удалось изменить пароль");
+  }
+});
 app.get("/api/employees", async (req, res) => {
   try {
     const active = req.query.active !== "false";
+    const scope = bossEmployeeFilter(req.account, "e");
     const { rows } = await pool.query(
-      `SELECT e.id,e.full_name name,e.card_number,e.position_name,e.active,e.needs_review,e.review_note,e.department_id,d.name department,s.name schedule,s.id schedule_id,s.code schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,s.paid_hours,s.effective_from schedule_effective_from FROM employees e LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT st.*,es.effective_from FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=CURRENT_DATE AND(es.effective_to IS NULL OR es.effective_to>=CURRENT_DATE)ORDER BY es.effective_from DESC LIMIT 1)s ON true WHERE($1::boolean=false OR e.active=true)ORDER BY d.name,e.full_name`,
-      [active],
+      `SELECT e.id,e.full_name name,e.card_number,e.position_name,e.active,e.needs_review,e.review_note,e.department_id,d.name department,s.name schedule,s.id schedule_id,s.code schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,s.paid_hours,s.effective_from schedule_effective_from FROM employees e LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT st.*,es.effective_from FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=CURRENT_DATE AND(es.effective_to IS NULL OR es.effective_to>=CURRENT_DATE)ORDER BY es.effective_from DESC LIMIT 1)s ON true WHERE($1::boolean=false OR e.active=true)${scope.sql} ORDER BY d.name,e.full_name`,
+      [active, ...scope.params],
     );
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    safeError(res);
   }
 });
-app.patch("/api/employees/:id", async (req, res) => {
+app.patch("/api/employees/:id", requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id),
@@ -302,24 +645,27 @@ app.get("/api/schedules", async (_q, res) => {
 app.get("/api/skud-days", async (req, res) => {
   try {
     const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+    const scope = bossEmployeeFilter(req.account, "e");
     await pool.query(
       `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,
     );
     const { rows } = await pool.query(
-      `SELECT sd.employee_id id,e.full_name name,e.department_id,d.name department,s.schedule,s.schedule_id,s.schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,to_char(s.effective_from,'YYYY-MM-DD') schedule_effective_from,to_char(sd.work_date,'YYYY-MM-DD') date,COALESCE(to_char(sd.entry_time,'HH24:MI'),'—') entry,COALESCE(to_char(sd.end_time,'HH24:MI'),'—') exit,sd.fact_hours::float fact,sd.total_hours::float total,sd.combo_hours::float combo,sd.status,sd.record_count \"recordCount\",sd.issues FROM skud_days sd JOIN employees e ON e.id=sd.employee_id LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT es.effective_from,st.id schedule_id,st.name schedule,st.code schedule_code,st.schedule_kind,st.cycle_pattern,st.requires_anchor FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=sd.work_date AND(es.effective_to IS NULL OR es.effective_to>=sd.work_date)ORDER BY es.effective_from DESC LIMIT 1) s ON true WHERE sd.work_date>=($1 || '-01')::date AND sd.work_date<(($1 || '-01')::date + interval '1 month') AND lower(replace(e.full_name,'ё','е')) NOT LIKE '%сафиуллин%' ORDER BY d.name,e.full_name,sd.work_date`,
-      [month],
+      `SELECT sd.employee_id id,e.full_name name,e.department_id,d.name department,s.schedule,s.schedule_id,s.schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,to_char(s.effective_from,'YYYY-MM-DD') schedule_effective_from,to_char(sd.work_date,'YYYY-MM-DD') date,COALESCE(to_char(sd.entry_time,'HH24:MI'),'—') entry,COALESCE(to_char(sd.end_time,'HH24:MI'),'—') exit,sd.fact_hours::float fact,sd.total_hours::float total,sd.combo_hours::float combo,sd.status,sd.record_count "recordCount",sd.issues FROM skud_days sd JOIN employees e ON e.id=sd.employee_id LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT es.effective_from,st.id schedule_id,st.name schedule,st.code schedule_code,st.schedule_kind,st.cycle_pattern,st.requires_anchor FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=sd.work_date AND(es.effective_to IS NULL OR es.effective_to>=sd.work_date)ORDER BY es.effective_from DESC LIMIT 1) s ON true WHERE sd.work_date>=($1 || '-01')::date AND sd.work_date<(($1 || '-01')::date + interval '1 month') AND lower(replace(e.full_name,'ё','е')) NOT LIKE '%сафиуллин%'${scope.sql} ORDER BY d.name,e.full_name,sd.work_date`,
+      [month, ...scope.params],
     );
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    safeError(res);
   }
 });
-app.post("/api/skud-days/import", async (req, res) => {
+app.post("/api/skud-days/import", requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
   try {
     const rows = (Array.isArray(req.body?.rows) ? req.body.rows : []).filter(
       (row) => !isExcludedFromTimesheet(row.name),
     );
+    if (rows.length > 20000)
+      return res.status(413).json({ error: "Слишком большой файл импорта" });
     await client.query("BEGIN");
     await client.query(
       `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,
@@ -392,16 +738,17 @@ app.get("/api/schedule-overrides", async (req, res) => {
   try {
     const month = String(req.query.month || new Date().toISOString().slice(0, 7));
     await ensureScheduleOverrideTables();
+    const scope = bossEmployeeFilter(req.account, "e");
     const { rows } = await pool.query(
-      `SELECT ${overrideSelect} FROM schedule_overrides WHERE work_date>=($1 || '-01')::date AND work_date<(($1 || '-01')::date + interval '1 month') ORDER BY work_date,employee_id,id`,
-      [month],
+      `SELECT ${overrideSelectFor("so")} FROM schedule_overrides so JOIN employees e ON e.id=so.employee_id WHERE so.work_date>=($1 || '-01')::date AND so.work_date<(($1 || '-01')::date + interval '1 month')${scope.sql} ORDER BY so.work_date,so.employee_id,so.id`,
+      [month, ...scope.params],
     );
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    safeError(res);
   }
 });
-app.get("/api/schedule-overrides/audit", async (req, res) => {
+app.get("/api/schedule-overrides/audit", requireRole("admin"), async (req, res) => {
   try {
     const month = String(req.query.month || new Date().toISOString().slice(0, 7));
     const changedBy = String(req.query.changed_by || "").trim();
@@ -414,10 +761,10 @@ app.get("/api/schedule-overrides/audit", async (req, res) => {
     );
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    safeError(res);
   }
 });
-app.post("/api/schedule-overrides", async (req, res) => {
+app.post("/api/schedule-overrides", requireRole("admin", "boss"), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -436,6 +783,8 @@ app.post("/api/schedule-overrides", async (req, res) => {
     } = req.body;
     if (!employee_id || !work_date || !start_time || !end_time)
       return res.status(400).json({ error: "Не хватает данных корректировки" });
+    if (!(await accountCanAccessEmployee(req.account, employee_id)))
+      return safeError(res, 403, "Недостаточно прав");
     await ensureScheduleOverrideTables();
     await client.query("BEGIN");
     const { rows } = await client.query(
@@ -447,7 +796,7 @@ app.post("/api/schedule-overrides", async (req, res) => {
         end_time,
         reason || "manual",
         comment || null,
-        changed_by || "user",
+        req.account.name || changed_by || "user",
         Math.max(0, Number(leave_minutes) || 0),
         Math.max(0, Number(combo_hours) || 0),
         Math.max(0, Number(overtime_hours) || 0),
@@ -455,17 +804,17 @@ app.post("/api/schedule-overrides", async (req, res) => {
         combo_employee_name?.trim() || null,
       ],
     );
-    await auditOverride(client, "created", rows[0], changed_by || "user");
+    await auditOverride(client, "created", rows[0], req.account.name || changed_by || "user");
     await client.query("COMMIT");
     res.status(201).json(rows[0]);
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
-    res.status(400).json({ error: e.message });
+    safeError(res, 400);
   } finally {
     client.release();
   }
 });
-app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
+app.post("/api/schedule-overrides/bulk-delete", requireRole("admin", "boss"), async (req, res) => {
   const client = await pool.connect();
   try {
     const {
@@ -480,6 +829,8 @@ app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
     } = req.body;
     if (!employee_id || !reason || !start_time || !end_time || !comment)
       return res.status(400).json({ error: "Не хватает данных периода" });
+    if (!(await accountCanAccessEmployee(req.account, employee_id)))
+      return safeError(res, 403, "Недостаточно прав");
     await ensureScheduleOverrideTables();
     await client.query("BEGIN");
     const params = [
@@ -488,7 +839,7 @@ app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
       start_time,
       end_time,
       comment,
-      changed_by || null,
+      req.account.role === "admin" ? changed_by || null : req.account.name,
       from_date || null,
     ];
     const { rows } = await client.query(
@@ -496,7 +847,7 @@ app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
       params,
     );
     for (const row of rows) {
-      await auditOverride(client, "deleted", row, action_by || changed_by || "admin");
+      await auditOverride(client, "deleted", row, req.account.name || action_by || changed_by || "admin");
     }
     await client.query(
       `DELETE FROM schedule_overrides WHERE id=ANY($1::bigint[])`,
@@ -506,12 +857,12 @@ app.post("/api/schedule-overrides/bulk-delete", async (req, res) => {
     res.json({ ok: true, count: rows.length });
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
-    res.status(400).json({ error: e.message });
+    safeError(res, 400);
   } finally {
     client.release();
   }
 });
-app.delete("/api/schedule-overrides/:id", async (req, res) => {
+app.delete("/api/schedule-overrides/:id", requireRole("admin", "boss"), async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id);
@@ -520,24 +871,28 @@ app.delete("/api/schedule-overrides/:id", async (req, res) => {
     await client.query("BEGIN");
     const { rows } = await client.query(
       `SELECT ${overrideSelect} FROM schedule_overrides WHERE id=$1 AND($2::text IS NULL OR changed_by=$2)`,
-      [id, changed_by || null],
+      [id, req.account.role === "admin" ? changed_by || null : req.account.name],
     );
     if (!rows.length) {
       await client.query("ROLLBACK");
       return res.status(404).json({ error: "Правка не найдена" });
     }
-    await auditOverride(client, "deleted", rows[0], action_by || changed_by || "admin");
+    if (!(await accountCanAccessEmployee(req.account, rows[0].employee_id))) {
+      await client.query("ROLLBACK");
+      return safeError(res, 403, "Недостаточно прав");
+    }
+    await auditOverride(client, "deleted", rows[0], req.account.name || action_by || changed_by || "admin");
     await client.query(`DELETE FROM schedule_overrides WHERE id=$1`, [id]);
     await client.query("COMMIT");
     res.json({ ok: true });
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
-    res.status(400).json({ error: e.message });
+    safeError(res, 400);
   } finally {
     client.release();
   }
 });
-app.post("/api/schedule-overrides/audit/:id/restore", async (req, res) => {
+app.post("/api/schedule-overrides/audit/:id/restore", requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id);
@@ -601,17 +956,17 @@ app.post("/api/schedule-overrides/audit/:id/restore", async (req, res) => {
     client.release();
   }
 });
-app.get("/api/departments", async (_q, res) => {
+app.get("/api/departments", requireRole("admin"), async (_q, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT d.id,d.external_id,d.name,d.active,count(e.id)::int employee_count,ds.schedule_id,st.name schedule_name,to_char(st.start_time,'HH24:MI') schedule_start,to_char(st.end_time,'HH24:MI') schedule_end FROM departments d LEFT JOIN employees e ON e.department_id=d.id AND e.active LEFT JOIN LATERAL(SELECT schedule_id FROM department_schedules WHERE department_id=d.id AND effective_from<=CURRENT_DATE AND(effective_to IS NULL OR effective_to>=CURRENT_DATE)ORDER BY effective_from DESC LIMIT 1)ds ON true LEFT JOIN schedule_templates st ON st.id=ds.schedule_id GROUP BY d.id,ds.schedule_id,st.name,st.start_time,st.end_time ORDER BY d.name`,
     );
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    safeError(res);
   }
 });
-app.post("/api/departments", async (req, res) => {
+app.post("/api/departments", requireRole("admin"), async (req, res) => {
   try {
     const { name } = req.body;
     if (!name?.trim())
@@ -625,7 +980,7 @@ app.post("/api/departments", async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
-app.patch("/api/departments/:id", async (req, res) => {
+app.patch("/api/departments/:id", requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id),
@@ -667,7 +1022,7 @@ app.patch("/api/departments/:id", async (req, res) => {
     client.release();
   }
 });
-app.delete("/api/departments/:id", async (req, res) => {
+app.delete("/api/departments/:id", requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id);

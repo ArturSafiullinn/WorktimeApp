@@ -16,6 +16,7 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "lucide-react": "latest",
+    "nodemailer": "^9.0.3",
     "pg": "^8.22.0",
     "react": "latest",
     "react-dom": "latest",

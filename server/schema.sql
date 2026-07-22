@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGE
 CREATE INDEX IF NOT EXISTS idx_skud_days_lookup ON skud_days(employee_id,work_date);
 CREATE TABLE IF NOT EXISTS department_schedules(id BIGSERIAL PRIMARY KEY,department_id BIGINT NOT NULL REFERENCES departments(id),schedule_id BIGINT NOT NULL REFERENCES schedule_templates(id),effective_from DATE NOT NULL,effective_to DATE,source TEXT NOT NULL DEFAULT 'manual',UNIQUE(department_id,effective_from));
 CREATE TABLE IF NOT EXISTS app_accounts(login TEXT PRIMARY KEY,full_name TEXT NOT NULL,password TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN('admin','observer','boss')),employee_ids JSONB NOT NULL DEFAULT '[]'::jsonb,department_ids JSONB NOT NULL DEFAULT '[]'::jsonb,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),updated_at TIMESTAMPTZ NOT NULL DEFAULT now());
+ALTER TABLE app_accounts ADD COLUMN IF NOT EXISTS email TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_app_accounts_email ON app_accounts(lower(email)) WHERE email IS NOT NULL AND email<>'';
+CREATE TABLE IF NOT EXISTS password_reset_tokens(id BIGSERIAL PRIMARY KEY,login TEXT NOT NULL REFERENCES app_accounts(login) ON DELETE CASCADE,token_hash TEXT NOT NULL UNIQUE,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),expires_at TIMESTAMPTZ NOT NULL,used_at TIMESTAMPTZ);
+CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_login ON password_reset_tokens(login);
 CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department_id);
 CREATE INDEX IF NOT EXISTS idx_employee_schedules_lookup ON employee_schedules(employee_id,effective_from,effective_to);
 CREATE INDEX IF NOT EXISTS idx_department_schedules_lookup ON department_schedules(department_id,effective_from,effective_to);

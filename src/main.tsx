@@ -35,6 +35,7 @@ type Status =
   | "Ранний уход"
   | "Выход в течение дня"
   | "Изменен график"
+  | "Выходной"
   | "Ручная корректировка"
   | "Требует проверки";
 type Employee = {
@@ -66,6 +67,7 @@ type Account = {
   pass: string;
   role: Role;
   name: string;
+  email?: string;
   employeeIds?: number[];
   departmentIds?: number[];
 };
@@ -159,9 +161,10 @@ const normalizeAccountRows = (rows: any[]): Record<string, Account> =>
     rows.map((row) => [
       row.login,
       {
-        pass: row.pass,
+        pass: row.pass || "",
         role: row.role,
         name: row.name,
+        email: row.email || "",
         employeeIds: Array.isArray(row.employeeIds) ? row.employeeIds : [],
         departmentIds: Array.isArray(row.departmentIds)
           ? row.departmentIds
@@ -174,6 +177,18 @@ const replaceAccounts = (next: Record<string, Account>) => {
   Object.assign(accounts, next);
   saveAccounts(next);
 };
+const authTokenKey = "authToken";
+const apiFetch = window.fetch.bind(window);
+window.fetch = ((input: RequestInfo | URL, init: RequestInit = {}) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const token = localStorage.getItem(authTokenKey);
+  if (token && url.includes("/api/")) {
+    const headers = new Headers(init.headers || {});
+    headers.set("Authorization", `Bearer ${token}`);
+    init = { ...init, headers };
+  }
+  return apiFetch(input, init);
+}) as typeof window.fetch;
 const loadAccountsFromApi = async () => {
   const response = await fetch("/api/accounts");
   if (!response.ok) throw new Error("Не удалось загрузить пользователей");
@@ -226,12 +241,14 @@ const correctionReasons = {
   missing_exit: "Не приложил пропуск на выходе",
   temporary_leave: "Отлучался в течение дня",
   schedule_change: "Другая смена",
+  day_off: "Выходной день",
   substitution: "Выходил за другого сотрудника",
   sick_leave: "Больничный",
   vacation: "Отпуск",
   other: "Другое",
 };
 type CorrectionReason = keyof typeof correctionReasons;
+const zeroWorkdayReasons = new Set(["day_off", "sick_leave", "vacation"]);
 const fmt = (n: number) =>
   n.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ч";
 const formatDate = (date?: string) => {
@@ -255,7 +272,10 @@ const formatScheduleText = (text?: string) =>
   );
 function App() {
   const [role, setRole] = useState<Role | null>(
-    () => localStorage.getItem("role") as Role,
+    () =>
+      localStorage.getItem(authTokenKey)
+        ? (localStorage.getItem("role") as Role)
+        : null,
   );
   const [user, setUser] = useState(localStorage.getItem("user") || "");
   const [, setAccountRevision] = useState(0);
@@ -289,6 +309,7 @@ function App() {
     return employees.filter((employee) => allowedEmployeeIds.has(employee.id));
   })();
   useEffect(() => {
+    if (!role) return;
     Promise.all([
       fetch("/api/employees").then((r) =>
         r.ok ? r.json() : Promise.reject(new Error("API недоступен")),
@@ -312,10 +333,10 @@ function App() {
         ]);
       })
       .catch(() => setEmployees([]));
-  }, []);
+  }, [role]);
   useEffect(() => {
-    refreshAccounts().catch(() => {});
-  }, []);
+    if (role === "admin") refreshAccounts().catch(() => {});
+  }, [role]);
   if (!role)
     return (
       <Login
@@ -337,6 +358,7 @@ function App() {
   const logout = () => {
     localStorage.removeItem("role");
     localStorage.removeItem("user");
+    localStorage.removeItem(authTokenKey);
     setRole(null);
     setPage("dashboard");
   };
@@ -560,12 +582,98 @@ function Login({
   const [u, setU] = useState(""),
     [p, setP] = useState(""),
     [showPassword, setShowPassword] = useState(false),
+    [busy, setBusy] = useState(false),
     [err, setErr] = useState("");
+  const [forgotMode, setForgotMode] = useState(false);
+  const [resetToken, setResetToken] = useState(
+    () => new URLSearchParams(location.search).get("resetToken") || "",
+  );
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetPassword, setResetPassword] = useState("");
+  const [resetRepeat, setResetRepeat] = useState("");
+  const [resetMessage, setResetMessage] = useState("");
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    await refreshAccounts().catch(() => {});
-    if (accounts[u]?.pass === p) onLogin(u, accounts[u].role);
-    else setErr("Неверный логин или пароль");
+    setBusy(true);
+    setErr("");
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ login: u.trim(), password: p }),
+      });
+      if (!response.ok) throw new Error("Неверный логин или пароль");
+      const result = await response.json();
+      localStorage.setItem(authTokenKey, result.token);
+      const account = result.account;
+      replaceAccounts({
+        ...accounts,
+        [account.login]: {
+          pass: "",
+          role: account.role,
+          name: account.name,
+          employeeIds: account.employeeIds || [],
+          departmentIds: account.departmentIds || [],
+        },
+      });
+      if (account.role === "admin") await refreshAccounts().catch(() => {});
+      onLogin(account.login, account.role);
+    } catch {
+      setErr("Неверный логин или пароль");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const requestReset = async () => {
+    setBusy(true);
+    setErr("");
+    setResetMessage("");
+    try {
+      const response = await fetch("/api/password-reset/request", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: resetEmail }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Не удалось отправить письмо");
+      setResetMessage(
+        result.message || "Если email найден, ссылка для сброса пароля отправлена.",
+      );
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Не удалось отправить письмо");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const confirmReset = async () => {
+    if (resetPassword !== resetRepeat) {
+      setErr("Пароли не совпадают");
+      return;
+    }
+    setBusy(true);
+    setErr("");
+    setResetMessage("");
+    try {
+      const response = await fetch("/api/password-reset/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: resetToken, password: resetPassword }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Не удалось изменить пароль");
+      setResetMessage(
+        result.message || "Пароль изменен. Теперь можно войти с новым паролем.",
+      );
+      setResetToken("");
+      setForgotMode(false);
+      history.replaceState(null, "", location.pathname);
+      setResetPassword("");
+      setResetRepeat("");
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : "Не удалось изменить пароль");
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <div className="login">
@@ -596,9 +704,87 @@ function Login({
         </div>
         <div>
           <span className="eyebrow">ДОБРО ПОЖАЛОВАТЬ</span>
-          <h2>Вход в систему</h2>
-          <p>Используйте корпоративную учетную запись</p>
+          <h2>{resetToken ? "Новый пароль" : "Вход в систему"}</h2>
+          <p>
+            {resetToken
+              ? "Задайте новый пароль для учетной записи"
+              : "Используйте корпоративную учетную запись"}
+          </p>
         </div>
+        {resetToken ? (
+          <>
+            <label>
+              Новый пароль
+              <input
+                type={showPassword ? "text" : "password"}
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.target.value)}
+                placeholder="Минимум 8 символов"
+              />
+            </label>
+            <label>
+              Повторите пароль
+              <input
+                type={showPassword ? "text" : "password"}
+                value={resetRepeat}
+                onChange={(e) => setResetRepeat(e.target.value)}
+                placeholder="Повторите новый пароль"
+              />
+            </label>
+            <label className="checkLine">
+              <input
+                type="checkbox"
+                checked={showPassword}
+                onChange={(e) => setShowPassword(e.target.checked)}
+              />
+              Показать пароль
+            </label>
+            {err && <div className="error">{err}</div>}
+            {resetMessage && <div className="success">{resetMessage}</div>}
+            <button
+              className="primary"
+              type="button"
+              onClick={confirmReset}
+              disabled={busy}
+            >
+              {busy ? "Сохраняем..." : "Изменить пароль"} <ChevronRight />
+            </button>
+          </>
+        ) : forgotMode ? (
+          <>
+            <label>
+              Email
+              <input
+                type="email"
+                value={resetEmail}
+                onChange={(e) => setResetEmail(e.target.value)}
+                placeholder="Email учетной записи"
+              />
+            </label>
+            {err && <div className="error">{err}</div>}
+            {resetMessage && <div className="success">{resetMessage}</div>}
+            <button
+              className="primary"
+              type="button"
+              onClick={requestReset}
+              disabled={busy}
+            >
+              {busy ? "Отправляем..." : "Отправить ссылку"} <ChevronRight />
+            </button>
+            <button
+              className="outline openDetail"
+              type="button"
+              onClick={() => {
+                setForgotMode(false);
+                setErr("");
+                setResetMessage("");
+              }}
+            >
+              Вернуться ко входу
+            </button>
+          </>
+        ) : (
+          <>
         <label>
           Логин
           <input
@@ -627,9 +813,21 @@ function Login({
           </span>
         </label>
         {err && <div className="error">{err}</div>}
-        <button className="primary" type="submit">
-          Войти <ChevronRight />
+        <button className="primary" type="submit" disabled={busy}>
+          {busy ? "Проверяем..." : "Войти"} <ChevronRight />
         </button>
+        <button
+          className="outline openDetail"
+          type="button"
+          onClick={() => {
+            setForgotMode(true);
+            setErr("");
+          }}
+        >
+          Забыли пароль?
+        </button>
+          </>
+        )}
       </form>
     </div>
   );
@@ -1080,7 +1278,9 @@ function cellFor(
     .find((row) => timeReasons.has(row.reason));
   const absenceOverride = [...sortedOverrides]
     .reverse()
-    .find((row) => row.reason === "sick_leave" || row.reason === "vacation");
+    .find((row) =>
+      ["day_off", "sick_leave", "vacation"].includes(row.reason),
+    );
   const absenceActive =
     !!absenceOverride &&
     (!timeOverride || Number(timeOverride.id || 0) < Number(absenceOverride.id || 0));
@@ -1135,7 +1335,9 @@ function cellFor(
       ),
     );
     const factLabel = absenceActive
-      ? absenceOverride?.reason === "sick_leave"
+      ? absenceOverride?.reason === "day_off"
+        ? "В"
+        : absenceOverride?.reason === "sick_leave"
         ? "Б"
         : "ОТ"
       : comboHours || overtimeHours
@@ -1161,6 +1363,8 @@ function cellFor(
       kind: absenceActive
         ? absenceOverride?.reason === "vacation"
           ? "vacation"
+          : absenceOverride?.reason === "day_off"
+            ? "off"
           : "review"
         : bad && !sortedOverrides.length
           ? "review"
@@ -1173,7 +1377,9 @@ function cellFor(
       overtimeHours,
       leaveMinutes,
       status: sortedOverrides.length
-        ? "Ручная корректировка"
+        ? absenceActive && absenceOverride?.reason === "day_off"
+          ? "Выходной"
+          : "Ручная корректировка"
         : fact
           ? visibleStatus(fact)
           : "Требует проверки",
@@ -1552,7 +1758,7 @@ function TimesheetCellModal({
     edit.end,
     leaveMinutes,
   );
-  const isAbsenceReason = ["sick_leave", "vacation"].includes(edit.reason);
+  const isAbsenceReason = zeroWorkdayReasons.has(edit.reason);
   const previewBaseHours = isAbsenceReason ? 0 : baseHours;
   const previewOvertimeHours = isAbsenceReason ? 0 : overtimeHours;
   const previewComboHours = isAbsenceReason ? 0 : comboHours;
@@ -1710,7 +1916,9 @@ function TimesheetCellModal({
                         "Изменено вручную"}
                     </b>
                     <small>
-                      {formatRange(row.start_time, row.end_time)}
+                      {zeroWorkdayReasons.has(row.reason)
+                        ? "Без рабочих часов"
+                        : formatRange(row.start_time, row.end_time)}
                       {Number(row.leave_minutes) > 0
                         ? ` · отлучка ${row.leave_minutes} мин`
                         : ""}
@@ -1911,7 +2119,7 @@ function TimesheetCellModal({
                 onChange={(event) =>
                   setEdit({ ...edit, comment: event.target.value })
                 }
-                placeholder="Например: забыл пропуск, отлучался на 40 минут, заменял сотрудника"
+                placeholder="Например: выходной по 4-дневке, забыл пропуск, отлучался на 40 минут"
               />
             </label>
             <div className="calcPreview">
@@ -1980,14 +2188,16 @@ function Detail({ e, employees = [], role, go, update, user }: any) {
     (x: Employee) => String(x.id) === correction.comboEmployeeId,
   );
   const saveCorrection = async () => {
-    const isAbsence = ["sick_leave", "vacation"].includes(correction.reason);
+    const isAbsence = zeroWorkdayReasons.has(correction.reason);
     const start = isAbsence ? "00:00" : correction.start;
     const end = isAbsence ? "00:00" : correction.end;
     const hours = isAbsence ? 0 : payableManualHours(e, start, end);
     const status =
-      correction.reason === "schedule_change"
-        ? "Изменен график"
-        : "Ручная корректировка";
+      correction.reason === "day_off"
+        ? "Выходной"
+        : correction.reason === "schedule_change"
+          ? "Изменен график"
+          : "Ручная корректировка";
     await fetch("/api/schedule-overrides", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2017,7 +2227,7 @@ function Detail({ e, employees = [], role, go, update, user }: any) {
       entry: start,
       exit: end,
       fact: hours,
-      total: hours + e.combo,
+      total: hours,
       status,
     });
   };
@@ -2123,7 +2333,7 @@ function Detail({ e, employees = [], role, go, update, user }: any) {
                   ))}
                 </select>
               </label>
-              {!["sick_leave", "vacation"].includes(correction.reason) && (
+              {!zeroWorkdayReasons.has(correction.reason) && (
                 <div className="fieldRow">
                   {!correctionNeedsOnlyExit && (
                     <label>
@@ -2672,9 +2882,8 @@ function BossEmployeeCalendar({
   const openEndedHorizonDays = 365;
   const [selectedId, setSelectedId] = useState(roster[0]?.id || 0);
   const [overrides, setOverrides] = useState<WorkOverride[]>([]);
-  const [mode, setMode] = useState<"schedule_change" | "sick_leave" | "vacation">(
-    "schedule_change",
-  );
+  type StaffPeriodMode = "schedule_change" | "day_off" | "sick_leave" | "vacation";
+  const [mode, setMode] = useState<StaffPeriodMode>("schedule_change");
   const [from, setFrom] = useState(today);
   const [to, setTo] = useState(today);
   const [noEnd, setNoEnd] = useState(false);
@@ -2709,6 +2918,7 @@ function BossEmployeeCalendar({
   }, new Map<string, WorkOverride[]>());
   const markFor = (date: string) => {
     const rows = byDate.get(date) || [];
+    if (rows.some((row) => row.reason === "day_off")) return "В";
     if (rows.some((row) => row.reason === "sick_leave")) return "Б";
     if (rows.some((row) => row.reason === "vacation")) return "ОТ";
     if (rows.some((row) => row.reason === "schedule_change")) return "гр";
@@ -2717,7 +2927,9 @@ function BossEmployeeCalendar({
   const assignedPeriods = Array.from(
     employeeOverrides
       .filter((row) =>
-        ["schedule_change", "sick_leave", "vacation"].includes(row.reason),
+        ["schedule_change", "day_off", "sick_leave", "vacation"].includes(
+          row.reason,
+        ),
       )
       .reduce((map, row) => {
         const key = [
@@ -2797,7 +3009,7 @@ function BossEmployeeCalendar({
   const editPeriod = (period: (typeof assignedPeriods)[number]) => {
     const sample = period.rows[0];
     setEditingPeriodKey(period.key);
-    setMode(sample.reason as "schedule_change" | "sick_leave" | "vacation");
+    setMode(sample.reason as StaffPeriodMode);
     setFrom(period.from);
     setTo(period.openEnded ? period.from : period.to);
     setNoEnd(!!period.openEnded);
@@ -2817,7 +3029,8 @@ function BossEmployeeCalendar({
     if (editingPeriod) await bulkDeletePeriod(editingPeriod);
     const toDate = noEnd ? addDays(from, openEndedHorizonDays) : to;
     const dates = datesBetween(from, toDate);
-    const isAbsence = mode === "sick_leave" || mode === "vacation";
+    const isAbsence =
+      mode === "day_off" || mode === "sick_leave" || mode === "vacation";
     const payloads = dates.map((date) => ({
       employee_id: selected.id,
       work_date: date,
@@ -2829,6 +3042,8 @@ function BossEmployeeCalendar({
           comment ||
             (mode === "schedule_change"
               ? "Временное изменение графика"
+              : mode === "day_off"
+                ? "Выходной день по распоряжению начальника"
               : correctionReasons[mode]),
           noEnd ? "Время окончания неопределено" : "",
         ]
@@ -2938,6 +3153,7 @@ function BossEmployeeCalendar({
           <div className="timesheetLegend staffLegend">
             <span><i className="check" /> Б больничный</span>
             <span><i className="vac" /> ОТ отпуск</span>
+            <span><i className="plan" /> В выходной</span>
             <span><i className="fact" /> гр временный график</span>
           </div>
           {assignedPeriods.length > 0 && (
@@ -3021,6 +3237,7 @@ function BossEmployeeCalendar({
                   onChange={(event) => setMode(event.target.value as any)}
                 >
                   <option value="schedule_change">Временный график</option>
+                  <option value="day_off">Выходной день</option>
                   <option value="sick_leave">Больничный</option>
                   <option value="vacation">Отпуск</option>
                 </select>
@@ -3364,6 +3581,7 @@ function Admin({
   const emptyUser = {
     login: "",
     name: "",
+    email: "",
     pass: "",
     role: "boss" as Role,
     employeeIds: [] as number[],
@@ -3408,6 +3626,7 @@ function Admin({
       body: JSON.stringify({
         login: nextLogin,
         name: account.name,
+        email: account.email || "",
         pass: account.pass,
         role: account.role,
         employeeIds: account.employeeIds || [],
@@ -3428,6 +3647,7 @@ function Admin({
     setSelected({
       login,
       name: rows[login].name,
+      email: rows[login].email || "",
       pass: "",
       role: rows[login].role,
       employeeIds: rows[login].employeeIds || [],
@@ -3464,6 +3684,7 @@ function Admin({
     }
     const account = {
       name: selected.name.trim(),
+      email: selected.email.trim(),
       pass: selected.pass.trim() || rows[originalLogin]?.pass || "",
       role: selected.role,
       employeeIds: selected.role === "boss" ? selected.employeeIds : undefined,
@@ -3482,6 +3703,7 @@ function Admin({
     setSelected({
       login,
       name: account.name,
+      email: account.email || "",
       pass: "",
       role: account.role,
       employeeIds: account.employeeIds || [],
@@ -3581,6 +3803,16 @@ function Admin({
                 setSelected({ ...selected, name: e.target.value })
               }
               placeholder="Имя пользователя"
+            />
+          </label>
+          <label>
+            Email для сброса пароля
+            <input
+              value={selected.email}
+              onChange={(e) =>
+                setSelected({ ...selected, email: e.target.value })
+              }
+              placeholder="name@example.ru"
             />
           </label>
           <label>
@@ -3733,7 +3965,9 @@ const auditOverrideText = (row?: WorkOverride) => {
   const parts = [
     auditReasonText(row.reason),
     formatDate(row.work_date),
-    formatRange(row.start_time, row.end_time),
+    zeroWorkdayReasons.has(row.reason)
+      ? "без рабочих часов"
+      : formatRange(row.start_time, row.end_time),
   ];
   if (Number(row.leave_minutes) > 0) parts.push(`отлучка ${row.leave_minutes} мин`);
   if (Number(row.overtime_hours) > 0)
@@ -3893,32 +4127,24 @@ function AccountSettings({
       setMessage("Учетная запись не найдена");
       return;
     }
-    if (account.pass !== current) {
-      setMessage("Текущий пароль указан неверно");
-      return;
-    }
     if (!next.trim()) {
       setMessage("Введите новый пароль");
+      return;
+    }
+    if (next.trim().length < 8) {
+      setMessage("Новый пароль должен быть не короче 8 символов");
       return;
     }
     if (next !== repeat) {
       setMessage("Пароли не совпадают");
       return;
     }
-    const updated = {
-      ...accounts,
-      [login]: { ...account, pass: next.trim() },
-    };
-    const response = await fetch(`/api/accounts/${encodeURIComponent(login)}`, {
+    const response = await fetch("/api/me/password", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        login,
-        name: account.name,
-        pass: next.trim(),
-        role: account.role,
-        employeeIds: account.employeeIds || [],
-        departmentIds: account.departmentIds || [],
+        current,
+        next: next.trim(),
       }),
     });
     if (!response.ok) {
@@ -3926,7 +4152,6 @@ function AccountSettings({
       setMessage(error.error || "Не удалось изменить пароль");
       return;
     }
-    replaceAccounts(updated);
     await onAccountsChange().catch(() => {});
     setCurrent("");
     setNext("");
