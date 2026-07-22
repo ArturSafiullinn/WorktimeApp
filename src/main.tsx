@@ -283,6 +283,7 @@ function App() {
   const [employees, setEmployees] = useState<Employee[]>(base);
   const [selected, setSelected] = useState<Employee | null>(null);
   const [menu, setMenu] = useState(false);
+  const [globalOverrides, setGlobalOverrides] = useState<WorkOverride[]>([]);
   const refreshAccounts = async () => {
     const next = await loadAccountsFromApi();
     setAccountRevision((revision) => revision + 1);
@@ -308,6 +309,13 @@ function App() {
     ]);
     return employees.filter((employee) => allowedEmployeeIds.has(employee.id));
   })();
+  const scopedOpenProblems = scopedEmployees.filter((e) =>
+    isOpenProblem(e, globalOverrides),
+  );
+  const detailEmployee =
+    selected?.date
+      ? employees.find((x) => x.id === selected.id && x.date === selected.date)
+      : employees.find((x) => x.id === selected?.id && !x.date);
   useEffect(() => {
     if (!role) return;
     Promise.all([
@@ -315,12 +323,16 @@ function App() {
         r.ok ? r.json() : Promise.reject(new Error("API недоступен")),
       ),
       fetch("/api/skud-days?month=2026-07").then((r) => (r.ok ? r.json() : [])),
+      fetch("/api/schedule-overrides?month=2026-07").then((r) =>
+        r.ok ? r.json() : [],
+      ),
     ])
-      .then(([employeeRows, skudRows]) => {
+      .then(([employeeRows, skudRows, overrideRows]) => {
         const rosterRows = employeeRows.map(employeeFromApi);
         const departmentByEmployee = new Map(
           rosterRows.map((employee) => [employee.id, employee.departmentId]),
         );
+        setGlobalOverrides(overrideRows);
         setEmployees([
           ...rosterRows,
           ...skudRows.map((row: any) =>
@@ -332,7 +344,10 @@ function App() {
           ),
         ]);
       })
-      .catch(() => setEmployees([]));
+      .catch(() => {
+        setGlobalOverrides([]);
+        setEmployees([]);
+      });
   }, [role]);
   useEffect(() => {
     if (role === "admin") refreshAccounts().catch(() => {});
@@ -390,7 +405,7 @@ function App() {
           <Nav
             icon={<AlertTriangle />}
             label="Проблемы"
-            badge={String(scopedEmployees.filter(isActionableProblem).length)}
+            badge={String(scopedOpenProblems.length)}
             active={page === "problems"}
             onClick={() => go("problems")}
           />{" "}
@@ -487,6 +502,7 @@ function App() {
               role={role}
               go={go}
               employees={scopedEmployees}
+              overrides={globalOverrides}
               accountName={accounts[user]?.name}
             />
           )}{" "}
@@ -496,18 +512,32 @@ function App() {
               go={go}
               role={role}
               user={user}
+              onOverridesChange={setGlobalOverrides}
             />
           )}{" "}
-          {page === "problems" && <Problems employees={scopedEmployees} go={go} />}{" "}
+          {page === "problems" && (
+            <Problems
+              employees={scopedEmployees}
+              overrides={globalOverrides}
+              go={go}
+            />
+          )}{" "}
           {page === "detail" && selected && (
             <Detail
-              e={employees.find((x) => x.id === selected.id) || selected}
+              e={detailEmployee || selected}
               employees={scopedEmployees}
               role={role}
               go={go}
               user={user}
+              onOverrideSave={(row: WorkOverride) =>
+                setGlobalOverrides((rows) => [...rows, row])
+              }
               update={(v) =>
-                setEmployees(employees.map((x) => (x.id === v.id ? v : x)))
+                setEmployees(
+                  employees.map((x) =>
+                    x.id === v.id && (!v.date || x.date === v.date) ? v : x,
+                  ),
+                )
               }
             />
           )}{" "}
@@ -843,14 +873,17 @@ function Dashboard({
   role,
   go,
   employees,
+  overrides,
   accountName,
 }: {
   role: Role;
   go: any;
   employees: Employee[];
+  overrides: WorkOverride[];
   accountName?: string;
 }) {
-  const problem = employees.filter(isActionableProblem).length;
+  const openProblems = employees.filter((e) => isOpenProblem(e, overrides));
+  const problem = openProblems.length;
   const displayName = accountName || roleName[role];
   return (
     <>
@@ -888,7 +921,7 @@ function Dashboard({
         <Stat
           n={String(problem)}
           label="Требуют внимания"
-          sub={`${employees.filter((e) => isActionableProblem(e) && ["Нет входа", "Нет выхода", "Требует проверки"].includes(e.status)).length} критических`}
+          sub={`${openProblems.filter((e) => ["Нет входа", "Нет выхода", "Требует проверки"].includes(e.status)).length} критических`}
           warn
         />
         <Stat
@@ -912,8 +945,7 @@ function Dashboard({
               Все записи <ChevronRight />
             </button>
           </div>
-          {employees
-            .filter(isActionableProblem)
+          {openProblems
             .slice(0, 4)
             .map((e) => (
               <PersonRow e={e} key={e.id} onClick={() => go("detail", e)} />
@@ -1071,6 +1103,17 @@ const hasAssignedSchedule = (
 const isActionableProblem = (
   e: Pick<Employee, "date" | "status" | "scheduleId" | "scheduleCode" | "schedule">,
 ) => e.status !== "ОК" && hasAssignedSchedule(e) && !isTodayRecord(e);
+const isProblemResolvedByOverride = (
+  e: Pick<Employee, "id" | "date">,
+  overrides: WorkOverride[],
+) =>
+  !!e.date &&
+  overrides.some(
+    (row) =>
+      Number(row.employee_id) === Number(e.id) && row.work_date === e.date,
+  );
+const isOpenProblem = (e: Employee, overrides: WorkOverride[] = []) =>
+  isActionableProblem(e) && !isProblemResolvedByOverride(e, overrides);
 const visibleStatus = (e: Employee): Status =>
   (!hasAssignedSchedule(e) || isTodayRecord(e)) && e.status !== "ОК"
     ? "ОК"
@@ -1397,11 +1440,13 @@ function Timesheet({
   go,
   role,
   user,
+  onOverridesChange,
 }: {
   employees: Employee[];
   go: any;
   role: Role;
   user: string;
+  onOverridesChange?: (rows: WorkOverride[]) => void;
 }) {
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("all");
@@ -1413,9 +1458,15 @@ function Timesheet({
   useEffect(() => {
     fetch("/api/schedule-overrides?month=2026-07")
       .then((r) => (r.ok ? r.json() : []))
-      .then(setOverrides)
-      .catch(() => setOverrides([]));
-  }, []);
+      .then((rows) => {
+        setOverrides(rows);
+        onOverridesChange?.(rows);
+      })
+      .catch(() => {
+        setOverrides([]);
+        onOverridesChange?.([]);
+      });
+  }, [onOverridesChange]);
   const roster = Array.from(
     employees
       .reduce((map, e) => {
@@ -1645,11 +1696,18 @@ function Timesheet({
           onClose={() => setOpened(null)}
           onOpenDetail={() => {
             setOpened(null);
-            go("detail", opened.employee);
+            go(
+              "detail",
+              factFor(opened.employee, opened.cell.date) || {
+                ...opened.employee,
+                date: opened.cell.date,
+              },
+            );
           }}
           onSave={(row) => {
             const nextOverrides = [...overrides, row];
             setOverrides(nextOverrides);
+            onOverridesChange?.(nextOverrides);
             const day = monthDays.find((d) => d.date === row.work_date);
             if (day)
               setOpened({
@@ -1670,6 +1728,7 @@ function Timesheet({
           onDelete={(row) => {
             const nextOverrides = overrides.filter((item) => item.id !== row.id);
             setOverrides(nextOverrides);
+            onOverridesChange?.(nextOverrides);
             const day = monthDays.find((d) => d.date === row.work_date);
             if (day)
               setOpened({
@@ -2164,7 +2223,16 @@ function TimesheetCellModal({
     </div>
   );
 }
-function Problems({ employees, go }: any) {
+function Problems({
+  employees,
+  overrides,
+  go,
+}: {
+  employees: Employee[];
+  overrides: WorkOverride[];
+  go: any;
+}) {
+  const openProblems = employees.filter((e) => isOpenProblem(e, overrides));
   return (
     <>
       <PageHead
@@ -2183,16 +2251,22 @@ function Problems({ employees, go }: any) {
         </div>
       </div>
       <div className="panel problemList">
-        {employees
-          .filter(isActionableProblem)
-          .map((e: Employee) => (
-            <PersonRow e={e} key={e.id} onClick={() => go("detail", e)} />
-          ))}
+        {openProblems.map((e: Employee) => (
+          <PersonRow e={e} key={e.id} onClick={() => go("detail", e)} />
+        ))}
       </div>
     </>
   );
 }
-function Detail({ e, employees = [], role, go, update, user }: any) {
+function Detail({
+  e,
+  employees = [],
+  role,
+  go,
+  update,
+  user,
+  onOverrideSave,
+}: any) {
   const actorName = accounts[user]?.name || user || role;
   const [correction, setCorrection] = useState({
     date: e.date || "2026-07-06",
@@ -2219,7 +2293,7 @@ function Detail({ e, employees = [], role, go, update, user }: any) {
         : correction.reason === "schedule_change"
           ? "Изменен график"
           : "Ручная корректировка";
-    await fetch("/api/schedule-overrides", {
+    const response = await fetch("/api/schedule-overrides", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -2243,6 +2317,9 @@ function Detail({ e, employees = [], role, go, update, user }: any) {
             : "",
       }),
     }).catch(() => null);
+    const savedOverride = response?.ok ? await response.json() : null;
+    if (!savedOverride) return;
+    if (savedOverride) onOverrideSave?.(savedOverride);
     update({
       ...e,
       entry: start,
