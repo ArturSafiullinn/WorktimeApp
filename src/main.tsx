@@ -1006,6 +1006,7 @@ type TimesheetCell = {
   rawEntry?: string;
   rawExit?: string;
   planned?: boolean;
+  manualTime?: boolean;
   override?: WorkOverride;
   overrides?: WorkOverride[];
   comboEmployeeName?: string;
@@ -1148,6 +1149,13 @@ const suggestedOvertimeHours = (
 };
 const blankCellHours = { hours: 0, baseHours: 0, comboHours: 0, overtimeHours: 0, leaveMinutes: 0 };
 const compactHours = (hours: number) => hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
+const manualTimeReasons = new Set([
+  "forgot_pass",
+  "missing_entry",
+  "missing_exit",
+  "schedule_change",
+  "other",
+]);
 const normalizeTimeInput = (value: string) =>
   value.replace(/[^\d:]/g, "").slice(0, 5);
 const issueLabelFor = (status?: Status) =>
@@ -1169,10 +1177,10 @@ const issueTitleFor = (cell: TimesheetCell, employeeName: string) =>
         .join(", ")
     : `${employeeName}, ${formatDate(cell.date)}`;
 const cellTimeText = (cell: TimesheetCell) => {
-  const start = cell.rawEntry || cell.start;
-  const end = cell.rawExit || cell.end;
-  if (!start || !end || start === "—" || end === "—") return "";
   if (["off", "vacation", "unknown"].includes(cell.kind)) return "";
+  const start = cell.rawEntry && cell.rawExit ? cell.rawEntry : cell.manualTime ? cell.start : undefined;
+  const end = cell.rawEntry && cell.rawExit ? cell.rawExit : cell.manualTime ? cell.end : undefined;
+  if (!start || !end || start === "—" || end === "—") return "";
   return `${formatTime(start)}→${formatTime(end)}`;
 };
 function plannedCellFor(
@@ -1266,16 +1274,9 @@ function cellFor(
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
   const sortedOverrides = [...overrides].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
-  const timeReasons = new Set([
-    "forgot_pass",
-    "missing_entry",
-    "missing_exit",
-    "schedule_change",
-    "other",
-  ]);
   const timeOverride = [...sortedOverrides]
     .reverse()
-    .find((row) => timeReasons.has(row.reason));
+    .find((row) => manualTimeReasons.has(row.reason));
   const absenceOverride = [...sortedOverrides]
     .reverse()
     .find((row) =>
@@ -1360,6 +1361,7 @@ function cellFor(
       issueLabel: issueMark ? issueLabelFor(fact?.status) : undefined,
       rawEntry,
       rawExit,
+      manualTime: !!timeOverride && !absenceActive,
       kind: absenceActive
         ? absenceOverride?.reason === "vacation"
           ? "vacation"
@@ -1741,6 +1743,8 @@ function TimesheetCellModal({
     comboEmployeeName: opened.cell.override?.combo_employee_name || "",
     comment: opened.cell.override?.comment || "",
   });
+  const [saveError, setSaveError] = useState("");
+  const [saving, setSaving] = useState(false);
   const comboEmployee = roster.find((e) => String(e.id) === edit.comboEmployeeId);
   const comboEmployeeName = comboEmployee?.name || edit.comboEmployeeName.trim();
   const leaveMinutes = Math.max(0, Number(edit.leaveMinutes) || 0);
@@ -1776,6 +1780,8 @@ function TimesheetCellModal({
   const needsRelatedEmployee =
     !isAbsenceReason && (comboHours > 0 || edit.reason === "substitution");
   const save = async () => {
+    setSaveError("");
+    setSaving(true);
     const payload = {
       employee_id: opened.employee.id,
       work_date: opened.cell.date,
@@ -1794,13 +1800,27 @@ function TimesheetCellModal({
           : null,
       combo_employee_name: isAbsenceReason ? "" : comboEmployeeName,
     };
-    const response = await fetch("/api/schedule-overrides", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    if (!response.ok) return;
-    onSave(await response.json());
+    try {
+      const response = await fetch("/api/schedule-overrides", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        setSaveError(
+          response.status === 401
+            ? "Сессия истекла. Выйдите и войдите снова."
+            : error.error || "Не удалось сохранить правку",
+        );
+        return;
+      }
+      onSave(await response.json());
+    } catch {
+      setSaveError("Не удалось сохранить: сервер API недоступен");
+    } finally {
+      setSaving(false);
+    }
   };
   const remove = async (row: WorkOverride) => {
     if (!row.id) return;
@@ -2131,8 +2151,9 @@ function TimesheetCellModal({
               <b>=</b>
               <strong>Итого {fmt(totalHours)}</strong>
             </div>
-            <button className="primary" onClick={save}>
-              Сохранить в табеле
+            {saveError && <div className="error">{saveError}</div>}
+            <button className="primary" onClick={save} disabled={saving}>
+              {saving ? "Сохраняю..." : "Сохранить в табеле"}
             </button>
           </div>
         )}
