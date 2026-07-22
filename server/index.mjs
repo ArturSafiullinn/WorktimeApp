@@ -576,6 +576,22 @@ app.put("/api/me/password", async (req, res) => {
     safeError(res, 400, "Не удалось изменить пароль");
   }
 });
+app.put("/api/me/email", async (req, res) => {
+  try {
+    const current = String(req.body?.current || "");
+    const email = normalizeEmail(req.body?.email);
+    if (!verifyPassword(req.account.password, current))
+      return safeError(res, 400, "Текущий пароль указан неверно");
+    await ensureAccountsTable();
+    await pool.query(`UPDATE app_accounts SET email=$2,updated_at=now() WHERE login=$1`, [
+      req.account.login,
+      email || null,
+    ]);
+    res.json({ ok: true, email });
+  } catch (e) {
+    safeError(res, 400, e.message || "Не удалось сохранить email");
+  }
+});
 app.get("/api/employees", async (req, res) => {
   try {
     const active = req.query.active !== "false";

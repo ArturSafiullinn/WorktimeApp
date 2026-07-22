@@ -4116,12 +4116,18 @@ function AccountSettings({
   login: string;
   onAccountsChange: () => Promise<Record<string, Account>>;
 }) {
+  const account = accounts[login];
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [repeat, setRepeat] = useState("");
+  const [email, setEmail] = useState("");
+  const [emailPassword, setEmailPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [message, setMessage] = useState("");
-  const account = accounts[login];
+  const [emailMessage, setEmailMessage] = useState("");
+  useEffect(() => {
+    setEmail(account?.email || "");
+  }, [account?.email]);
   const save = async () => {
     if (!account) {
       setMessage("Учетная запись не найдена");
@@ -4158,6 +4164,34 @@ function AccountSettings({
     setRepeat("");
     setMessage("Пароль изменен");
   };
+  const saveEmail = async () => {
+    if (!account) {
+      setEmailMessage("Учетная запись не найдена");
+      return;
+    }
+    const response = await fetch("/api/me/email", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        current: emailPassword,
+        email: email.trim(),
+      }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setEmailMessage(result.error || "Не удалось сохранить email");
+      return;
+    }
+    const updated = {
+      ...accounts,
+      [login]: { ...account, email: result.email || "" },
+    };
+    replaceAccounts(updated);
+    await onAccountsChange().catch(() => {});
+    setEmail(result.email || "");
+    setEmailPassword("");
+    setEmailMessage(result.email ? "Email сохранен" : "Email удален");
+  };
   return (
     <>
       <PageHead
@@ -4177,9 +4211,47 @@ function AccountSettings({
             <b>{account?.name}</b>
             <small>
               {login} · {account ? roleName[account.role] : "Нет роли"}
+              {account?.email ? ` · ${account.email}` : ""}
             </small>
           </div>
         </div>
+        <div className="accountBlock">
+          <h3>Email для сброса пароля</h3>
+          <label>
+            Email
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="name@example.ru"
+            />
+          </label>
+          <label>
+            Текущий пароль
+            <input
+              type={showPassword ? "text" : "password"}
+              value={emailPassword}
+              onChange={(e) => setEmailPassword(e.target.value)}
+              placeholder="Подтвердите текущим паролем"
+            />
+          </label>
+          {emailMessage && (
+            <div
+              className={
+                emailMessage.includes("сохранен") || emailMessage.includes("удален")
+                  ? "success"
+                  : "error"
+              }
+            >
+              {emailMessage}
+            </div>
+          )}
+          <button className="primary" onClick={saveEmail}>
+            Сохранить email
+          </button>
+        </div>
+        <div className="accountBlock">
+          <h3>Смена пароля</h3>
         <label>
           Текущий пароль
           <input
@@ -4224,6 +4296,7 @@ function AccountSettings({
           <KeyRound />
           Изменить пароль
         </button>
+        </div>
       </div>
     </>
   );
