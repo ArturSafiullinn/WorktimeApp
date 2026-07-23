@@ -1146,6 +1146,16 @@ const isActionableProblem = (
   hasAssignedSchedule(e) &&
   !isTodayRecord(e) &&
   !isAwaitingSkudRefresh(e, skudReadyThrough);
+const noSkudAttendanceIssue = "Нет данных СКУД при наличии рабочего графика";
+const isNoAttendanceRecord = (
+  e: Pick<Employee, "status" | "entry" | "exit" | "fact" | "recordCount" | "issues">,
+) =>
+  e.status === "Требует проверки" &&
+  ((e.issues || []).includes(noSkudAttendanceIssue) ||
+    (e.entry === "—" &&
+      e.exit === "—" &&
+      !e.fact &&
+      (!e.recordCount || e.recordCount <= 1)));
 const isProblemResolvedByOverride = (
   e: Pick<Employee, "id" | "date">,
   overrides: WorkOverride[],
@@ -1161,6 +1171,7 @@ const isOpenProblem = (
   skudReadyThrough?: string,
 ) =>
   isActionableProblem(e, skudReadyThrough) &&
+  !isNoAttendanceRecord(e) &&
   !isProblemResolvedByOverride(e, overrides);
 const visibleStatus = (e: Employee, skudReadyThrough?: string): Status =>
   isAwaitingSkudRefresh(e, skudReadyThrough) && e.status !== "ОК"
