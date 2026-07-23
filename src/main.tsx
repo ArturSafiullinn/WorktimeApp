@@ -935,7 +935,7 @@ function Dashboard({
           sub={`${employees.filter((e) => e.entry !== "—").length} с отметками СКУД`}
         />
         <Stat
-          n={fmt(employees.reduce((sum, e) => sum + e.fact, 0))}
+          n={fmt(employees.reduce((sum, e) => sum + payableFactHours(e), 0))}
           label="Отработано"
           sub="по загруженным данным"
         />
@@ -1233,6 +1233,12 @@ const payableManualHours = (
   const plannedHours = plannedPaidHoursFor(e);
   return roundHours(plannedHours == null ? workedHours : Math.min(workedHours, plannedHours));
 };
+const payableFactHours = (e: Employee) => {
+  const fact = Number(e.fact) || 0;
+  if (!fact || !isRegularSchedule(e) || e.entry === "—" || e.exit === "—")
+    return fact;
+  return Math.min(fact, payableManualHours(e, e.entry, e.exit));
+};
 const suggestedOvertimeHours = (
   e: Employee,
   start: string,
@@ -1391,7 +1397,7 @@ function cellFor(
     !!absenceOverride &&
     (!timeOverride || Number(timeOverride.id || 0) < Number(absenceOverride.id || 0));
   if (fact || sortedOverrides.length) {
-    const baseHours = fact?.fact || 0;
+    const baseHours = fact ? payableFactHours(fact) : 0;
     const planned = plannedCellFor(e, d, planAnchorDate);
     const awaitingSkudRefresh =
       !!fact && isAwaitingSkudRefresh(fact, skudReadyThrough);
@@ -2406,6 +2412,7 @@ function Detail({
   onOverrideSave,
 }: any) {
   const actorName = accounts[user]?.name || user || role;
+  const payableFact = payableFactHours(e);
   const [correction, setCorrection] = useState({
     date: e.date || "2026-07-06",
     start: e.entry !== "—" ? e.entry : "08:00",
@@ -2522,7 +2529,7 @@ function Detail({
             <span className="eyebrow">РАСЧЕТ СИСТЕМЫ</span>
             <div>
               <span>Фактически по СКУД</span>
-              <b>{fmt(e.fact)}</b>
+              <b>{fmt(payableFact)}</b>
             </div>
             <div>
               <span>Совмещение</span>
@@ -2530,7 +2537,7 @@ function Detail({
             </div>
             <div className="total">
               <span>Итого к оплате</span>
-              <b>{fmt(e.total)}</b>
+              <b>{fmt(roundHours(payableFact + (Number(e.combo) || 0)))}</b>
             </div>
           </div>
           {role !== "observer" && (
@@ -2780,6 +2787,7 @@ function Combination({ e, employees, go, update }: any) {
   const [h, setH] = useState(4);
   const [employeeId, setEmployeeId] = useState("");
   const [employeeName, setEmployeeName] = useState("");
+  const payableFact = payableFactHours(e);
   const relatedEmployee = employees?.find(
     (x: Employee) => String(x.id) === employeeId,
   );
@@ -2793,13 +2801,13 @@ function Combination({ e, employees, go, update }: any) {
         update({
           ...e,
           combo: h,
-          total: e.fact + h,
+          total: payableFact + h,
           status: "Ручная корректировка",
         });
         go("detail", {
           ...e,
           combo: h,
-          total: e.fact + h,
+          total: payableFact + h,
           status: "Ручная корректировка",
         });
       }}
@@ -2852,11 +2860,11 @@ function Combination({ e, employees, go, update }: any) {
         <textarea placeholder="Опишите выполненные работы" />
       </label>
       <div className="calcPreview">
-        <span>Факт {fmt(e.fact)}</span>
+        <span>Факт {fmt(payableFact)}</span>
         <b>+</b>
         <span>Совмещение {fmt(h)}</span>
         <b>=</b>
-        <strong>К оплате {fmt(e.fact + h)}</strong>
+        <strong>К оплате {fmt(payableFact + h)}</strong>
       </div>
       {(relatedEmployee?.name || employeeName.trim()) && (
         <div className="calcPreview">
@@ -2920,7 +2928,12 @@ function Approval({ employees }: any) {
           <span>
             Фактические часы
             <b>
-              {fmt(employees.reduce((a: number, e: Employee) => a + e.fact, 0))}
+              {fmt(
+                employees.reduce(
+                  (a: number, e: Employee) => a + payableFactHours(e),
+                  0,
+                ),
+              )}
             </b>
           </span>
           <span>
@@ -2971,7 +2984,33 @@ function SkudImport({
   const load = async (file?: File) => {
     if (!file) return;
     try {
-      const rows = parseSkudWorkbook(await file.arrayBuffer()) as Employee[];
+      const rosterById = new Map(
+        employees
+          .filter((employee) => !employee.date)
+          .map((employee) => [employee.id, employee]),
+      );
+      const rows = (parseSkudWorkbook(await file.arrayBuffer()) as Employee[]).map(
+        (row) => {
+          const roster = rosterById.get(row.id);
+          const enriched = roster
+            ? {
+                ...row,
+                schedule: roster.schedule || row.schedule,
+                scheduleId: roster.scheduleId,
+                scheduleCode: roster.scheduleCode,
+                scheduleKind: roster.scheduleKind,
+                schedulePattern: roster.schedulePattern,
+                scheduleEffectiveFrom: roster.scheduleEffectiveFrom,
+              }
+            : row;
+          const fact = payableFactHours(enriched);
+          return {
+            ...enriched,
+            fact,
+            total: roundHours(fact + (Number(enriched.combo) || 0)),
+          };
+        },
+      );
       setState({ name: file.name, rows });
     } catch (e) {
       setState({
