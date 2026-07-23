@@ -37,7 +37,8 @@ type Status =
   | "Изменен график"
   | "Выходной"
   | "Ручная корректировка"
-  | "Требует проверки";
+  | "Требует проверки"
+  | "Ожидает данных";
 type Employee = {
   id: number;
   name: string;
@@ -309,8 +310,18 @@ function App() {
     ]);
     return employees.filter((employee) => allowedEmployeeIds.has(employee.id));
   })();
+  const latestSkudDate = employees
+    .filter((employee) => employee.date)
+    .reduce(
+      (latest, employee) =>
+        !latest || employee.date! > latest ? employee.date! : latest,
+      "",
+    );
+  const skudReadyThrough = latestSkudDate
+    ? addDays(latestSkudDate, -1)
+    : undefined;
   const scopedOpenProblems = scopedEmployees.filter((e) =>
-    isOpenProblem(e, globalOverrides),
+    isOpenProblem(e, globalOverrides, skudReadyThrough),
   );
   const detailEmployee =
     selected?.date
@@ -489,7 +500,9 @@ function App() {
           <div className="headerRight">
             <span className="sync">
               <i />
-              СКУД синхронизирован
+              {skudReadyThrough
+                ? `СКУД загружен по ${formatDate(skudReadyThrough)}`
+                : "СКУД ожидает загрузки"}
             </span>
             <button className="avatar sm" onClick={() => go("account")}>
               {accounts[user]?.name?.[0]}
@@ -504,6 +517,7 @@ function App() {
               employees={scopedEmployees}
               overrides={globalOverrides}
               accountName={accounts[user]?.name}
+              skudReadyThrough={skudReadyThrough}
             />
           )}{" "}
           {page === "timesheet" && (
@@ -513,12 +527,14 @@ function App() {
               role={role}
               user={user}
               onOverridesChange={setGlobalOverrides}
+              skudReadyThrough={skudReadyThrough}
             />
           )}{" "}
           {page === "problems" && (
             <Problems
               employees={scopedEmployees}
               overrides={globalOverrides}
+              skudReadyThrough={skudReadyThrough}
               go={go}
             />
           )}{" "}
@@ -529,6 +545,7 @@ function App() {
               role={role}
               go={go}
               user={user}
+              skudReadyThrough={skudReadyThrough}
               onOverrideSave={(row: WorkOverride) =>
                 setGlobalOverrides((rows) => [...rows, row])
               }
@@ -875,14 +892,18 @@ function Dashboard({
   employees,
   overrides,
   accountName,
+  skudReadyThrough,
 }: {
   role: Role;
   go: any;
   employees: Employee[];
   overrides: WorkOverride[];
   accountName?: string;
+  skudReadyThrough?: string;
 }) {
-  const openProblems = employees.filter((e) => isOpenProblem(e, overrides));
+  const openProblems = employees.filter((e) =>
+    isOpenProblem(e, overrides, skudReadyThrough),
+  );
   const problem = openProblems.length;
   const displayName = accountName || roleName[role];
   return (
@@ -948,7 +969,12 @@ function Dashboard({
           {openProblems
             .slice(0, 4)
             .map((e) => (
-              <PersonRow e={e} key={e.id} onClick={() => go("detail", e)} />
+              <PersonRow
+                e={e}
+                key={e.id}
+                skudReadyThrough={skudReadyThrough}
+                onClick={() => go("detail", e)}
+              />
             ))}
         </div>
         <div className="panel quick">
@@ -988,7 +1014,15 @@ const Stat = ({ n, label, sub, warn }: any) => (
     <small>{sub}</small>
   </div>
 );
-const PersonRow = ({ e, onClick }: { e: Employee; onClick: any }) => (
+const PersonRow = ({
+  e,
+  onClick,
+  skudReadyThrough,
+}: {
+  e: Employee;
+  onClick: any;
+  skudReadyThrough?: string;
+}) => (
   <button className="personRow" onClick={onClick}>
     <span className="avatar">{e.initials}</span>
     <div>
@@ -998,7 +1032,7 @@ const PersonRow = ({ e, onClick }: { e: Employee; onClick: any }) => (
         {formatTime(e.exit)}
       </small>
     </div>
-    <Status s={visibleStatus(e)} />
+    <Status s={visibleStatus(e, skudReadyThrough)} />
     <ChevronRight />
   </button>
 );
@@ -1090,6 +1124,10 @@ const localDateString = (date = new Date()) =>
   `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 const isTodayRecord = (e?: Pick<Employee, "date"> | null) =>
   !!e?.date && e.date === localDateString();
+const isAwaitingSkudRefresh = (
+  e?: Pick<Employee, "date"> | null,
+  skudReadyThrough?: string,
+) => !!e?.date && (!skudReadyThrough || e.date > skudReadyThrough);
 const hasAssignedSchedule = (
   e: Pick<Employee, "scheduleId" | "scheduleCode" | "schedule">,
 ) => {
@@ -1102,7 +1140,12 @@ const hasAssignedSchedule = (
 };
 const isActionableProblem = (
   e: Pick<Employee, "date" | "status" | "scheduleId" | "scheduleCode" | "schedule">,
-) => e.status !== "ОК" && hasAssignedSchedule(e) && !isTodayRecord(e);
+  skudReadyThrough?: string,
+) =>
+  e.status !== "ОК" &&
+  hasAssignedSchedule(e) &&
+  !isTodayRecord(e) &&
+  !isAwaitingSkudRefresh(e, skudReadyThrough);
 const isProblemResolvedByOverride = (
   e: Pick<Employee, "id" | "date">,
   overrides: WorkOverride[],
@@ -1112,10 +1155,17 @@ const isProblemResolvedByOverride = (
     (row) =>
       Number(row.employee_id) === Number(e.id) && row.work_date === e.date,
   );
-const isOpenProblem = (e: Employee, overrides: WorkOverride[] = []) =>
-  isActionableProblem(e) && !isProblemResolvedByOverride(e, overrides);
-const visibleStatus = (e: Employee): Status =>
-  (!hasAssignedSchedule(e) || isTodayRecord(e)) && e.status !== "ОК"
+const isOpenProblem = (
+  e: Employee,
+  overrides: WorkOverride[] = [],
+  skudReadyThrough?: string,
+) =>
+  isActionableProblem(e, skudReadyThrough) &&
+  !isProblemResolvedByOverride(e, overrides);
+const visibleStatus = (e: Employee, skudReadyThrough?: string): Status =>
+  isAwaitingSkudRefresh(e, skudReadyThrough) && e.status !== "ОК"
+    ? "Ожидает данных"
+    : (!hasAssignedSchedule(e) || isTodayRecord(e)) && e.status !== "ОК"
     ? "ОК"
     : e.status;
 const normalizeSearch = (value: string) =>
@@ -1314,6 +1364,7 @@ function cellFor(
   fact?: Employee,
   overrides: WorkOverride[] = [],
   planAnchorDate?: string,
+  skudReadyThrough?: string,
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
   const sortedOverrides = [...overrides].sort((a, b) => Number(a.id || 0) - Number(b.id || 0));
@@ -1331,8 +1382,11 @@ function cellFor(
   if (fact || sortedOverrides.length) {
     const baseHours = fact?.fact || 0;
     const planned = plannedCellFor(e, d, planAnchorDate);
+    const awaitingSkudRefresh =
+      !!fact && isAwaitingSkudRefresh(fact, skudReadyThrough);
     const bad =
       !!fact &&
+      !awaitingSkudRefresh &&
       isActionableProblem(fact) &&
       ["Нет входа", "Нет выхода", "Требует проверки"].includes(fact.status);
     if (
@@ -1426,7 +1480,7 @@ function cellFor(
           ? "Выходной"
           : "Ручная корректировка"
         : fact
-          ? visibleStatus(fact)
+          ? visibleStatus(fact, skudReadyThrough)
           : "Требует проверки",
       override: sortedOverrides[sortedOverrides.length - 1],
       overrides: sortedOverrides,
@@ -1441,12 +1495,14 @@ function Timesheet({
   role,
   user,
   onOverridesChange,
+  skudReadyThrough,
 }: {
   employees: Employee[];
   go: any;
   role: Role;
   user: string;
   onOverridesChange?: (rows: WorkOverride[]) => void;
+  skudReadyThrough?: string;
 }) {
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("all");
@@ -1520,6 +1576,7 @@ function Timesheet({
           factFor(e, d.date),
           overrideFor(e, d.date),
           planAnchorFor(e),
+          skudReadyThrough,
         ).hours,
       0,
     );
@@ -1648,6 +1705,7 @@ function Timesheet({
                       factFor(e, d.date),
                       overrideFor(e, d.date),
                       planAnchorFor(e),
+                      skudReadyThrough,
                     );
                     const timeText = cellTimeText(cell);
                     return (
@@ -1722,6 +1780,7 @@ function Timesheet({
                       item.work_date === row.work_date,
                   ),
                   planAnchorFor(opened.employee),
+                  skudReadyThrough,
                 ),
               });
           }}
@@ -1743,6 +1802,7 @@ function Timesheet({
                       item.work_date === row.work_date,
                   ),
                   planAnchorFor(opened.employee),
+                  skudReadyThrough,
                 ),
               });
           }}
@@ -2226,13 +2286,17 @@ function TimesheetCellModal({
 function Problems({
   employees,
   overrides,
+  skudReadyThrough,
   go,
 }: {
   employees: Employee[];
   overrides: WorkOverride[];
+  skudReadyThrough?: string;
   go: any;
 }) {
-  const openProblems = employees.filter((e) => isOpenProblem(e, overrides));
+  const openProblems = employees.filter((e) =>
+    isOpenProblem(e, overrides, skudReadyThrough),
+  );
   return (
     <>
       <PageHead
@@ -2252,7 +2316,12 @@ function Problems({
       </div>
       <div className="panel problemList">
         {openProblems.map((e: Employee) => (
-          <PersonRow e={e} key={e.id} onClick={() => go("detail", e)} />
+          <PersonRow
+            e={e}
+            key={e.id}
+            skudReadyThrough={skudReadyThrough}
+            onClick={() => go("detail", e)}
+          />
         ))}
       </div>
     </>
@@ -2265,6 +2334,7 @@ function Detail({
   go,
   update,
   user,
+  skudReadyThrough,
   onOverrideSave,
 }: any) {
   const actorName = accounts[user]?.name || user || role;
@@ -2344,7 +2414,7 @@ function Detail({
             {e.department} · {formatScheduleText(e.schedule)}
           </p>
         </div>
-        <Status s={visibleStatus(e)} />
+        <Status s={visibleStatus(e, skudReadyThrough)} />
       </div>
       <div className="detailGrid">
         <div>
@@ -2843,7 +2913,7 @@ function SkudImport({
     }
   };
   const rows = state.rows || [],
-    problems = rows.filter(isActionableProblem).length;
+    problems = rows.filter((row) => isActionableProblem(row)).length;
   return (
     <>
       <PageHead
