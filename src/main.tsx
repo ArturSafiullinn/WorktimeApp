@@ -1096,7 +1096,7 @@ type WorkOverride = {
 type OverrideAudit = {
   id: number;
   override_id?: number;
-  action: "created" | "deleted" | "restored";
+  action: "created" | "updated" | "deleted" | "restored";
   employee_id: number;
   employee_name?: string;
   department?: string;
@@ -1774,7 +1774,9 @@ function Timesheet({
             );
           }}
           onSave={(row) => {
-            const nextOverrides = [...overrides, row];
+            const nextOverrides = row.id
+              ? overrides.map((item) => (item.id === row.id ? row : item))
+              : [...overrides, row];
             setOverrides(nextOverrides);
             onOverridesChange?.(nextOverrides);
             const day = monthDays.find((d) => d.date === row.work_date);
@@ -1856,23 +1858,27 @@ function TimesheetCellModal({
       : opened.employee.exit !== "—"
         ? opened.employee.exit
         : "17:00";
-  const [edit, setEdit] = useState({
-    start: opened.cell.override?.start_time || initialStart,
-    end: opened.cell.override?.end_time || initialEnd,
-    reason:
-      (opened.cell.override?.reason as CorrectionReason) ||
-      (opened.cell.status === "Нет входа"
-        ? "missing_entry"
-        : opened.cell.status === "Нет выхода"
-          ? "missing_exit"
-          : "forgot_pass"),
-    leaveMinutes: String(opened.cell.override?.leave_minutes || 0),
-    comboHours: String(opened.cell.override?.combo_hours || 0),
-    overtimeHours: String(opened.cell.override?.overtime_hours || 0),
-    comboEmployeeId: String(opened.cell.override?.combo_employee_id || ""),
-    comboEmployeeName: opened.cell.override?.combo_employee_name || "",
-    comment: opened.cell.override?.comment || "",
+  const defaultReason =
+    opened.cell.status === "Нет входа"
+      ? "missing_entry"
+      : opened.cell.status === "Нет выхода"
+        ? "missing_exit"
+        : "forgot_pass";
+  const defaultEdit = () => ({
+    start: initialStart,
+    end: initialEnd,
+    reason: defaultReason as CorrectionReason,
+    leaveMinutes: "0",
+    comboHours: "0",
+    overtimeHours: "0",
+    comboEmployeeId: "",
+    comboEmployeeName: "",
+    comment: "",
   });
+  const [edit, setEdit] = useState(defaultEdit);
+  const [editingOverrideId, setEditingOverrideId] = useState<number | null>(
+    null,
+  );
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
   const comboEmployee = roster.find((e) => String(e.id) === edit.comboEmployeeId);
@@ -1920,6 +1926,7 @@ function TimesheetCellModal({
       reason: edit.reason,
       comment: edit.comment,
       changed_by: actorName,
+      action_by: actorName,
       leave_minutes: isAbsenceReason ? 0 : leaveMinutes,
       combo_hours: isAbsenceReason ? 0 : comboHours,
       overtime_hours: isAbsenceReason ? 0 : overtimeHours,
@@ -1931,11 +1938,16 @@ function TimesheetCellModal({
       combo_employee_name: isAbsenceReason ? "" : comboEmployeeName,
     };
     try {
-      const response = await fetch("/api/schedule-overrides", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
+      const response = await fetch(
+        editingOverrideId
+          ? `/api/schedule-overrides/${editingOverrideId}`
+          : "/api/schedule-overrides",
+        {
+          method: editingOverrideId ? "PATCH" : "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        },
+      );
       if (!response.ok) {
         const error = await response.json().catch(() => ({}));
         setSaveError(
@@ -1946,6 +1958,8 @@ function TimesheetCellModal({
         return;
       }
       onSave(await response.json());
+      setEditingOverrideId(null);
+      setEdit(defaultEdit());
     } catch {
       setSaveError("Не удалось сохранить: сервер API недоступен");
     } finally {
@@ -1963,6 +1977,23 @@ function TimesheetCellModal({
       }),
     });
     if (response.ok) onDelete(row);
+  };
+  const editExisting = (row: WorkOverride) => {
+    setEditingOverrideId(row.id || null);
+    setSaveError("");
+    setEdit({
+      start: row.start_time || initialStart,
+      end: row.end_time || initialEnd,
+      reason: (row.reason as CorrectionReason) || "forgot_pass",
+      leaveMinutes: String(row.leave_minutes || 0),
+      comboHours: String(
+        row.combo_hours || (row.reason === "substitution" ? 2 : 0),
+      ),
+      overtimeHours: String(row.overtime_hours || 0),
+      comboEmployeeId: String(row.combo_employee_id || ""),
+      comboEmployeeName: row.combo_employee_name || "",
+      comment: row.comment || "",
+    });
   };
   return (
     <div className="cellModalShade" onClick={onClose}>
@@ -2057,7 +2088,7 @@ function TimesheetCellModal({
           <div className="cellCorrections">
             <h3>Внесённые правки</h3>
             {cellOverrides.map((row) => {
-              const canDelete = role === "admin" || row.changed_by === actorName;
+              const canModify = role === "admin" || row.changed_by === actorName;
               return (
                 <div className="correctionItem" key={row.id || `${row.reason}-${row.created_at}`}>
                   <div>
@@ -2085,10 +2116,15 @@ function TimesheetCellModal({
                       {row.changed_by}
                     </small>
                   </div>
-                  {canDelete && (
-                    <button className="danger mini" onClick={() => remove(row)}>
-                      Удалить
-                    </button>
+                  {canModify && (
+                    <div className="correctionActions">
+                      <button className="outline mini" onClick={() => editExisting(row)}>
+                        Редактировать
+                      </button>
+                      <button className="danger mini" onClick={() => remove(row)}>
+                        Удалить
+                      </button>
+                    </div>
                   )}
                 </div>
               );
@@ -2097,17 +2133,22 @@ function TimesheetCellModal({
         )}
         {canEdit && (
           <div className="cellEdit">
-            <h3>Внести правку</h3>
+            <h3>{editingOverrideId ? "Редактировать правку" : "Внести правку"}</h3>
             <label>
               Причина
               <select
                 value={edit.reason}
-                onChange={(event) =>
+                onChange={(event) => {
+                  const reason = event.target.value as CorrectionReason;
                   setEdit({
                     ...edit,
-                    reason: event.target.value as CorrectionReason,
-                  })
-                }
+                    reason,
+                    comboHours:
+                      reason === "substitution" && Number(edit.comboHours) <= 0
+                        ? "2"
+                        : edit.comboHours,
+                  });
+                }}
               >
                 {Object.entries(correctionReasons).map(([key, label]) => (
                   <option key={key} value={key}>
@@ -2283,8 +2324,24 @@ function TimesheetCellModal({
             </div>
             {saveError && <div className="error">{saveError}</div>}
             <button className="primary" onClick={save} disabled={saving}>
-              {saving ? "Сохраняю..." : "Сохранить в табеле"}
+              {saving
+                ? "Сохраняю..."
+                : editingOverrideId
+                  ? "Сохранить изменения"
+                  : "Сохранить в табеле"}
             </button>
+            {editingOverrideId && (
+              <button
+                className="outline"
+                onClick={() => {
+                  setEditingOverrideId(null);
+                  setSaveError("");
+                  setEdit(defaultEdit());
+                }}
+              >
+                Отменить редактирование
+              </button>
+            )}
           </div>
         )}
         <button className={canEdit ? "outline openDetail" : "primary"} onClick={onOpenDetail}>
@@ -4134,6 +4191,7 @@ function Admin({
 }
 const auditActionName = {
   created: "Внес правку",
+  updated: "Изменил правку",
   deleted: "Удалил правку",
   restored: "Восстановил правку",
 };
@@ -4187,6 +4245,7 @@ function AuditLog({ employees, user }: { employees: Employee[]; user: string }) 
     ),
   ).sort((a, b) => a.localeCompare(b, "ru"));
   const created = rows.filter((row) => row.action === "created").length;
+  const updated = rows.filter((row) => row.action === "updated").length;
   const deleted = rows.filter((row) => row.action === "deleted").length;
   const restored = rows.filter((row) => row.action === "restored").length;
   const restore = async (row: OverrideAudit) => {
@@ -4216,6 +4275,7 @@ function AuditLog({ employees, user }: { employees: Employee[]; user: string }) 
       <div className="stats auditStats">
         <Stat n={String(rows.length)} label="Записей журнала" sub="за выбранный месяц" />
         <Stat n={String(created)} label="Внесено" sub="новые корректировки" />
+        <Stat n={String(updated)} label="Изменено" sub="правки обновлены" />
         <Stat n={String(deleted)} label="Удалено" sub="можно восстановить" warn={deleted > 0} />
         <Stat n={String(restored)} label="Восстановлено" sub="возврат из журнала" />
       </div>

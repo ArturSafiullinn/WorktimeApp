@@ -307,6 +307,12 @@ const ensureScheduleOverrideTables = async () => {
     `CREATE TABLE IF NOT EXISTS schedule_override_audit(id BIGSERIAL PRIMARY KEY,override_id BIGINT,action TEXT NOT NULL CHECK(action IN('created','deleted','restored')),employee_id INTEGER,work_date DATE,changed_by TEXT,action_by TEXT NOT NULL,snapshot JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now())`,
   );
   await pool.query(
+    `ALTER TABLE schedule_override_audit DROP CONSTRAINT IF EXISTS schedule_override_audit_action_check`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_override_audit ADD CONSTRAINT schedule_override_audit_action_check CHECK(action IN('created','updated','deleted','restored'))`,
+  );
+  await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_schedule_override_audit_lookup ON schedule_override_audit(created_at,changed_by,employee_id)`,
   );
 };
@@ -823,6 +829,69 @@ app.post("/api/schedule-overrides", requireRole("admin", "boss"), async (req, re
     await auditOverride(client, "created", rows[0], req.account.name || changed_by || "user");
     await client.query("COMMIT");
     res.status(201).json(rows[0]);
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    safeError(res, 400);
+  } finally {
+    client.release();
+  }
+});
+app.patch("/api/schedule-overrides/:id", requireRole("admin", "boss"), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.params.id);
+    const {
+      start_time,
+      end_time,
+      reason,
+      comment,
+      changed_by,
+      action_by,
+      leave_minutes,
+      combo_hours,
+      overtime_hours,
+      combo_employee_id,
+      combo_employee_name,
+    } = req.body;
+    if (!id || !start_time || !end_time)
+      return res.status(400).json({ error: "Не хватает данных корректировки" });
+    await ensureScheduleOverrideTables();
+    await client.query("BEGIN");
+    const existing = await client.query(
+      `SELECT ${overrideSelect} FROM schedule_overrides WHERE id=$1 AND($2::text IS NULL OR changed_by=$2)`,
+      [id, req.account.role === "admin" ? null : req.account.name],
+    );
+    if (!existing.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Правка не найдена" });
+    }
+    if (!(await accountCanAccessEmployee(req.account, existing.rows[0].employee_id))) {
+      await client.query("ROLLBACK");
+      return safeError(res, 403, "Недостаточно прав");
+    }
+    const { rows } = await client.query(
+      `UPDATE schedule_overrides SET start_time=$2,end_time=$3,reason=$4,comment=$5,leave_minutes=$6,combo_hours=$7,overtime_hours=$8,combo_employee_id=$9,combo_employee_name=$10 WHERE id=$1 RETURNING ${overrideSelect}`,
+      [
+        id,
+        start_time,
+        end_time,
+        reason || existing.rows[0].reason,
+        comment || null,
+        Math.max(0, Number(leave_minutes) || 0),
+        Math.max(0, Number(combo_hours) || 0),
+        Math.max(0, Number(overtime_hours) || 0),
+        combo_employee_id || null,
+        combo_employee_name?.trim() || null,
+      ],
+    );
+    await auditOverride(
+      client,
+      "updated",
+      { before: existing.rows[0], after: rows[0], ...rows[0] },
+      req.account.name || action_by || changed_by || "admin",
+    );
+    await client.query("COMMIT");
+    res.json(rows[0]);
   } catch (e) {
     await client.query("ROLLBACK").catch(() => {});
     safeError(res, 400);
