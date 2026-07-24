@@ -271,6 +271,11 @@ const formatScheduleText = (text?: string) =>
   (text || "").replace(/\b(\d{1,2}):(\d{2})(?::\d{2})?\b/g, (_x, h, m) =>
     `${String(h).padStart(2, "0")}:${m}`,
   );
+const isExcludedEmployeeName = (name?: string) =>
+  String(name || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .includes("сафиуллин");
 function App() {
   const [role, setRole] = useState<Role | null>(
     () =>
@@ -2986,11 +2991,15 @@ function SkudImport({
     try {
       const rosterById = new Map(
         employees
-          .filter((employee) => !employee.date)
+          .filter(
+            (employee) =>
+              !employee.date && !isExcludedEmployeeName(employee.name),
+          )
           .map((employee) => [employee.id, employee]),
       );
-      const rows = (parseSkudWorkbook(await file.arrayBuffer()) as Employee[]).map(
-        (row) => {
+      const rows = (parseSkudWorkbook(await file.arrayBuffer()) as Employee[])
+        .filter((row) => !isExcludedEmployeeName(row.name))
+        .map((row) => {
           const roster = rosterById.get(row.id);
           const enriched = roster
             ? {
@@ -3009,8 +3018,7 @@ function SkudImport({
             fact,
             total: roundHours(fact + (Number(enriched.combo) || 0)),
           };
-        },
-      );
+        });
       setState({ name: file.name, rows });
     } catch (e) {
       setState({
@@ -3101,12 +3109,17 @@ function SkudImport({
                   });
                   return;
                 }
-                const baseRows = employees.filter((e) => !e.date);
+                const baseRows = employees.filter(
+                  (e) => !e.date && !isExcludedEmployeeName(e.name),
+                );
                 const importedKeys = new Set(
                   rows.map((e) => `${e.id}|${e.date}`),
                 );
                 const oldFacts = employees.filter(
-                  (e) => e.date && !importedKeys.has(`${e.id}|${e.date}`),
+                  (e) =>
+                    e.date &&
+                    !isExcludedEmployeeName(e.name) &&
+                    !importedKeys.has(`${e.id}|${e.date}`),
                 );
                 onImport([...baseRows, ...oldFacts, ...rows]);
                 go("timesheet");
