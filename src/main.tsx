@@ -2373,8 +2373,19 @@ function Problems({
   skudReadyThrough?: string;
   go: any;
 }) {
+  const [q, setQ] = useState("");
+  const [department, setDepartment] = useState("all");
   const openProblems = employees.filter((e) =>
     isOpenProblem(e, overrides, skudReadyThrough),
+  );
+  const departments = Array.from(
+    new Set(openProblems.map((e) => e.department || "Без подразделения")),
+  ).sort((a, b) => a.localeCompare(b, "ru"));
+  const filteredProblems = openProblems.filter(
+    (e) =>
+      matchesSearch(`${e.name} ${e.initials} ${e.id}`, q) &&
+      (department === "all" ||
+        (e.department || "Без подразделения") === department),
   );
   return (
     <>
@@ -2393,15 +2404,39 @@ function Problems({
           </p>
         </div>
       </div>
+      <div className="toolbar">
+        <div className="search">
+          <Search />
+          <input
+            value={q}
+            onChange={(event) => setQ(event.target.value)}
+            placeholder="Найти по ФИО"
+          />
+        </div>
+        <select
+          value={department}
+          onChange={(event) => setDepartment(event.target.value)}
+        >
+          <option value="all">Все подразделения</option>
+          {departments.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </select>
+      </div>
       <div className="panel problemList">
-        {openProblems.map((e: Employee) => (
+        {filteredProblems.map((e: Employee) => (
           <PersonRow
             e={e}
-            key={e.id}
+            key={`${e.id}-${e.date || "roster"}`}
             skudReadyThrough={skudReadyThrough}
             onClick={() => go("detail", e)}
           />
         ))}
+        {!filteredProblems.length && (
+          <div className="empty">По выбранным фильтрам проблем нет</div>
+        )}
       </div>
     </>
   );
