@@ -479,6 +479,12 @@ function App() {
                 onClick={() => go("departments")}
               />
               <Nav
+                icon={<ShieldCheck />}
+                label="Исключения"
+                active={page === "exceptions"}
+                onClick={() => go("exceptions")}
+              />
+              <Nav
                 icon={<History />}
                 label="Журнал"
                 active={page === "audit"}
@@ -627,6 +633,7 @@ function App() {
           {page === "departments" && (
             <Departments employees={employees} setEmployees={setEmployees} />
           )}
+          {page === "exceptions" && role === "admin" && <AdminExceptions />}
           {page === "audit" && role === "admin" && (
             <AuditLog employees={employees} user={user} />
           )}
@@ -5091,6 +5098,101 @@ function Departments({
     </>
   );
 }
+const personalExceptions = [
+  {
+    names: [
+      "Большаков Константин Александрович",
+      "Большаков Сергей Александрович",
+    ],
+    condition: "Компенсируемый ранний уход",
+    rule:
+      "Могут уйти раньше на столько же минут, на сколько пришли раньше, но максимум на 15 минут.",
+    effect:
+      "Если условие выполнено, день считается как 8 часов и не попадает в проблемы.",
+  },
+];
+const generalExceptions = [
+  {
+    condition: "Нет явки по СКУД",
+    rule:
+      "День без любых отметок СКУД не попадает во вкладку «Проблемы».",
+    effect:
+      "В табеле день остается красным для видимости, но не засоряет список проблем.",
+  },
+  {
+    condition: "Ожидание свежего импорта",
+    rule:
+      "Самая свежая дата в загруженном СКУД считается еще не закрытой.",
+    effect:
+      "Проблемы за этот день скрываются до следующего импорта.",
+  },
+];
+function AdminExceptions() {
+  return (
+    <>
+      <PageHead
+        eye="НАСТРОЙКИ УЧЕТА"
+        title="Исключения"
+        text="Особые условия расчета и отображения табеля"
+      />
+      <div className="stats">
+        <Stat
+          n={String(personalExceptions.length)}
+          label="Персональных правил"
+          sub="для отдельных сотрудников"
+        />
+        <Stat
+          n={String(
+            personalExceptions.reduce((sum, row) => sum + row.names.length, 0),
+          )}
+          label="Сотрудников и групп"
+          sub="с особыми условиями"
+        />
+        <Stat
+          n={String(generalExceptions.length)}
+          label="Общих правил"
+          sub="для логики табеля"
+        />
+        <Stat n="0" label="Требуют настройки" sub="все правила активны" />
+      </div>
+      <div className="panel adminTable">
+        <div className="panelHead">
+          <div>
+            <span className="eyebrow">ПЕРСОНАЛЬНЫЕ</span>
+            <h2>Особые условия сотрудников</h2>
+          </div>
+        </div>
+        {personalExceptions.map((row) => (
+          <div className="adminRow" key={row.condition}>
+            <div>
+              <b>{row.names.join(", ")}</b>
+              <small>{row.rule}</small>
+              <small>{row.effect}</small>
+            </div>
+            <span className="role">{row.condition}</span>
+          </div>
+        ))}
+      </div>
+      <div className="panel adminTable exceptionsTable">
+        <div className="panelHead">
+          <div>
+            <span className="eyebrow">ОБЩИЕ</span>
+            <h2>Системные исключения</h2>
+          </div>
+        </div>
+        {generalExceptions.map((row) => (
+          <div className="adminRow" key={row.condition}>
+            <div>
+              <b>{row.condition}</b>
+              <small>{row.rule}</small>
+              <small>{row.effect}</small>
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
 const PageHead = ({ eye, title, text }: any) => (
   <div className="pageHead">
     <span className="eyebrow">{eye}</span>
@@ -5122,6 +5224,7 @@ const title = (p: string) =>
       admin: "Пользователи",
       account: "Моя учетная запись",
       departments: "Подразделения",
+      exceptions: "Исключения",
       audit: "Журнал",
     }) as any
   )[p];
