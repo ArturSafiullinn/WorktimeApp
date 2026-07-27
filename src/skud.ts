@@ -113,7 +113,32 @@ const initials = (name: string) =>
     .map((x) => x[0])
     .join("")
     .toUpperCase();
+const normalizedName = (name: string) =>
+  name.toLowerCase().replace(/ё/g, "е").replace(/\s+/g, " ").trim();
+const hasNameParts = (name: string, parts: string[]) =>
+  parts.every((part) => normalizedName(name).split(" ").includes(part));
+const hasBolshakovEarlyLeaveException = (name: string) =>
+  hasNameParts(name, ["большаков", "константин", "александрович"]) ||
+  hasNameParts(name, ["большаков", "сергей", "александрович"]);
+const allowedCompensatedEarlyLeave = (
+  name: string,
+  start: number | null,
+  end: number | null,
+  s: Schedule,
+) => {
+  if (!hasBolshakovEarlyLeaveException(name) || start == null || end == null)
+    return false;
+  const earlyArrival = Math.max(0, s.start - start);
+  const earlyLeave = Math.max(0, s.end - end);
+  return (
+    earlyLeave > 0 &&
+    earlyLeave <= 15 &&
+    earlyLeave <= earlyArrival &&
+    !s.overnight
+  );
+};
 function statusFor(
+  name: string,
   start: number | null,
   end: number | null,
   count: number,
@@ -149,6 +174,11 @@ function statusFor(
     );
     return "Опоздание";
   }
+  if (hasBolshakovEarlyLeaveException(name) && end! < s.end) {
+    if (allowedCompensatedEarlyLeave(name, start, end, s)) return "ОК";
+    issues.push("Выход раньше разрешенного компенсируемого времени");
+    return "Ранний уход";
+  }
   if (end! < s.end - SKUD_RULES.earlyThresholdMin) {
     issues.push(
       `Выход раньше графика более чем на ${SKUD_RULES.earlyThresholdMin} минут`,
@@ -171,7 +201,15 @@ function calculate(raw: Raw): SkudEmployee {
   let duration =
     raw.first != null && raw.last != null ? raw.last - raw.first : 0;
   if (s.overnight && duration < 0) duration += 1440;
-  const status = statusFor(raw.first, raw.last, raw.count, s, duration, issues);
+  const status = statusFor(
+    raw.name,
+    raw.first,
+    raw.last,
+    raw.count,
+    s,
+    duration,
+    issues,
+  );
   let fact = 0;
   if (
     status !== "Нет входа" &&
@@ -180,7 +218,9 @@ function calculate(raw: Raw): SkudEmployee {
     raw.first != null &&
     raw.last != null
   ) {
-    if (s.cleanTime || s.overnight || s.lunch <= 0) fact = duration / 60;
+    if (allowedCompensatedEarlyLeave(raw.name, raw.first, raw.last, s)) {
+      fact = Math.max(0, (s.end - s.start - s.lunch) / 60);
+    } else if (s.cleanTime || s.overnight || s.lunch <= 0) fact = duration / 60;
     else {
       const worked = Math.max(
         0,

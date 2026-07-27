@@ -276,6 +276,17 @@ const isExcludedEmployeeName = (name?: string) =>
     .toLowerCase()
     .replace(/ё/g, "е")
     .includes("сафиуллин");
+const normalizedEmployeeName = (name?: string) =>
+  String(name || "")
+    .toLowerCase()
+    .replace(/ё/g, "е")
+    .replace(/\s+/g, " ")
+    .trim();
+const employeeNameHasParts = (name: string | undefined, parts: string[]) =>
+  parts.every((part) => normalizedEmployeeName(name).split(" ").includes(part));
+const hasBolshakovEarlyLeaveException = (name?: string) =>
+  employeeNameHasParts(name, ["большаков", "константин", "александрович"]) ||
+  employeeNameHasParts(name, ["большаков", "сергей", "александрович"]);
 function App() {
   const [role, setRole] = useState<Role | null>(
     () =>
@@ -1176,10 +1187,13 @@ const isOpenProblem = (
   skudReadyThrough?: string,
 ) =>
   isActionableProblem(e, skudReadyThrough) &&
+  !hasCompensatedEarlyLeave(e) &&
   !isNoAttendanceRecord(e) &&
   !isProblemResolvedByOverride(e, overrides);
 const visibleStatus = (e: Employee, skudReadyThrough?: string): Status =>
-  isAwaitingSkudRefresh(e, skudReadyThrough) && e.status !== "ОК"
+  hasCompensatedEarlyLeave(e)
+    ? "ОК"
+    : isAwaitingSkudRefresh(e, skudReadyThrough) && e.status !== "ОК"
     ? "Ожидает данных"
     : (!hasAssignedSchedule(e) || isTodayRecord(e)) && e.status !== "ОК"
     ? "ОК"
@@ -1238,10 +1252,32 @@ const payableManualHours = (
   const plannedHours = plannedPaidHoursFor(e);
   return roundHours(plannedHours == null ? workedHours : Math.min(workedHours, plannedHours));
 };
+const hasCompensatedEarlyLeave = (e: Employee) => {
+  if (
+    !hasBolshakovEarlyLeaveException(e.name) ||
+    !isRegularSchedule(e) ||
+    e.entry === "—" ||
+    e.exit === "—"
+  )
+    return false;
+  const plannedStart = timeMinutes(
+    /09:00.*18:00/.test(formatScheduleText(e.schedule)) ? "09:00" : "08:00",
+  );
+  const plannedEnd = timeMinutes(
+    /09:00.*18:00/.test(formatScheduleText(e.schedule)) ? "18:00" : "17:00",
+  );
+  const entry = timeMinutes(e.entry);
+  const exit = timeMinutes(e.exit);
+  if ([plannedStart, plannedEnd, entry, exit].some(Number.isNaN)) return false;
+  const earlyArrival = Math.max(0, plannedStart - entry);
+  const earlyLeave = Math.max(0, plannedEnd - exit);
+  return earlyLeave > 0 && earlyLeave <= 15 && earlyLeave <= earlyArrival;
+};
 const payableFactHours = (e: Employee) => {
   const fact = Number(e.fact) || 0;
   if (!fact || !isRegularSchedule(e) || e.entry === "—" || e.exit === "—")
     return fact;
+  if (hasCompensatedEarlyLeave(e)) return plannedPaidHoursFor(e) || fact;
   return Math.min(fact, payableManualHours(e, e.entry, e.exit));
 };
 const suggestedOvertimeHours = (
