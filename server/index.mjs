@@ -76,13 +76,17 @@ const rateLimit = ({ windowMs, max }) => (req, res, next) => {
 };
 const signPayload = (payload) =>
   crypto.createHmac("sha256", appSecret).update(payload).digest("base64url");
+const authTokenTtlMs = Number(process.env.AUTH_TOKEN_TTL_MS || 30 * 24 * 60 * 60 * 1000);
+const authTokenRefreshWindowMs = Number(
+  process.env.AUTH_TOKEN_REFRESH_WINDOW_MS || 24 * 60 * 60 * 1000,
+);
 const createToken = (account) => {
   const payload = Buffer.from(
     JSON.stringify({
       login: account.login,
       role: account.role,
       name: account.name,
-      exp: Date.now() + 12 * 60 * 60 * 1000,
+      exp: Date.now() + authTokenTtlMs,
     }),
   ).toString("base64url");
   return `${payload}.${signPayload(payload)}`;
@@ -344,6 +348,7 @@ app.use(
         return callback(null, true);
       callback(new Error("CORS origin is not allowed"));
     },
+    exposedHeaders: ["X-Auth-Token"],
   }),
 );
 app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || "5mb" }));
@@ -483,6 +488,8 @@ app.use("/api", async (req, res, next) => {
   if (!verified) return safeError(res, 401, "Требуется вход в систему");
   const account = await accountByLogin(verified.login);
   if (!account) return safeError(res, 401, "Требуется вход в систему");
+  if (Number(verified.exp || 0) - Date.now() < authTokenRefreshWindowMs)
+    res.set("X-Auth-Token", createToken(account));
   req.account = account;
   next();
 });

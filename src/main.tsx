@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AlertTriangle,
@@ -188,7 +188,19 @@ window.fetch = ((input: RequestInfo | URL, init: RequestInit = {}) => {
     headers.set("Authorization", `Bearer ${token}`);
     init = { ...init, headers };
   }
-  return apiFetch(input, init);
+  return apiFetch(input, init).then((response) => {
+    if (url.includes("/api/")) {
+      const refreshedToken = response.headers.get("X-Auth-Token");
+      if (refreshedToken) localStorage.setItem(authTokenKey, refreshedToken);
+      if (response.status === 401) {
+        localStorage.removeItem("role");
+        localStorage.removeItem("user");
+        localStorage.removeItem(authTokenKey);
+        window.dispatchEvent(new window.Event("worktime:auth-expired"));
+      }
+    }
+    return response;
+  });
 }) as typeof window.fetch;
 const loadAccountsFromApi = async () => {
   const response = await fetch("/api/accounts");
@@ -301,6 +313,13 @@ function App() {
   const [selected, setSelected] = useState<Employee | null>(null);
   const [menu, setMenu] = useState(false);
   const [globalOverrides, setGlobalOverrides] = useState<WorkOverride[]>([]);
+  const logout = useCallback(() => {
+    localStorage.removeItem("role");
+    localStorage.removeItem("user");
+    localStorage.removeItem(authTokenKey);
+    setRole(null);
+    setPage("dashboard");
+  }, []);
   const refreshAccounts = async () => {
     const next = await loadAccountsFromApi();
     setAccountRevision((revision) => revision + 1);
@@ -377,6 +396,10 @@ function App() {
       });
   }, [role]);
   useEffect(() => {
+    window.addEventListener("worktime:auth-expired", logout);
+    return () => window.removeEventListener("worktime:auth-expired", logout);
+  }, [logout]);
+  useEffect(() => {
     if (role === "admin") refreshAccounts().catch(() => {});
   }, [role]);
   if (!role)
@@ -396,13 +419,6 @@ function App() {
     setSelected(e || null);
     setMenu(false);
     scrollTo(0, 0);
-  };
-  const logout = () => {
-    localStorage.removeItem("role");
-    localStorage.removeItem("user");
-    localStorage.removeItem(authTokenKey);
-    setRole(null);
-    setPage("dashboard");
   };
   return (
     <div className="app">
