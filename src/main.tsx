@@ -256,6 +256,7 @@ const correctionReasons = {
   schedule_change: "Другая смена",
   day_off: "Выходной день",
   substitution: "Выходил за другого сотрудника",
+  overtime_adjustment: "Ручная переработка",
   sick_leave: "Больничный",
   vacation: "Отпуск",
   other: "Другое",
@@ -585,7 +586,7 @@ function App() {
               user={user}
               skudReadyThrough={skudReadyThrough}
               onOverrideSave={(row: WorkOverride) =>
-                setGlobalOverrides((rows) => [...rows, row])
+                setGlobalOverrides((rows) => upsertOverride(rows, row))
               }
               update={(v) =>
                 setEmployees(
@@ -1328,8 +1329,13 @@ const manualTimeReasons = new Set([
   "missing_entry",
   "missing_exit",
   "schedule_change",
+  "overtime_adjustment",
   "other",
 ]);
+const upsertOverride = (rows: WorkOverride[], row: WorkOverride) =>
+  row.id && rows.some((item) => item.id === row.id)
+    ? rows.map((item) => (item.id === row.id ? row : item))
+    : [...rows, row];
 const normalizeTimeInput = (value: string) =>
   value.replace(/[^\d:]/g, "").slice(0, 5);
 const issueLabelFor = (status?: Status) =>
@@ -1844,9 +1850,7 @@ function Timesheet({
             );
           }}
           onSave={(row) => {
-            const nextOverrides = row.id
-              ? overrides.map((item) => (item.id === row.id ? row : item))
-              : [...overrides, row];
+            const nextOverrides = upsertOverride(overrides, row);
             setOverrides(nextOverrides);
             onOverridesChange?.(nextOverrides);
             const day = monthDays.find((d) => d.date === row.work_date);
