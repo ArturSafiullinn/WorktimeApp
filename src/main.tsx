@@ -269,6 +269,14 @@ const formatDate = (date?: string) => {
   const match = String(date || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
   return match ? `${match[3]}-${match[2]}-${match[1]}` : date || "";
 };
+const formatDateTime = (date?: string) => {
+  const match = String(date || "").match(
+    /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}:\d{2}))?/,
+  );
+  return match
+    ? `${match[3]}-${match[2]}-${match[1]}${match[4] ? ` ${match[4]}` : ""}`
+    : date || "";
+};
 const parseDisplayDate = (date: string) => {
   const match = date.trim().match(/^(\d{2})[-.](\d{2})[-.](\d{4})$/);
   return match ? `${match[3]}-${match[2]}-${match[1]}` : date;
@@ -4466,7 +4474,7 @@ function AuditLog({ employees, user }: { employees: Employee[]; user: string }) 
           return (
             <div className={`auditRow ${row.action}`} key={row.id}>
               <span>
-                <b>{row.created_at}</b>
+                <b>{formatDateTime(row.created_at)}</b>
                 <small>{formatDate(row.work_date)}</small>
               </span>
               <span>
