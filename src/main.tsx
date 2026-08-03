@@ -277,6 +277,54 @@ const formatDateTime = (date?: string) => {
     ? `${match[3]}-${match[2]}-${match[1]}${match[4] ? ` ${match[4]}` : ""}`
     : date || "";
 };
+const currentMonthValue = () => localDateString().slice(0, 7);
+const monthDate = (month: string) => {
+  const [year, rawMonth] = month.split("-").map(Number);
+  return new Date(year || new Date().getFullYear(), (rawMonth || 1) - 1, 1);
+};
+const addMonths = (month: string, delta: number) => {
+  const date = monthDate(month);
+  date.setMonth(date.getMonth() + delta);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+};
+const monthOptions = (selectedMonth: string) =>
+  Array.from(new Set([selectedMonth, ...Array.from({ length: 18 }, (_, i) => addMonths(currentMonthValue(), -i))]));
+const formatMonthLabel = (month: string) => {
+  const [year, rawMonth] = month.split("-");
+  return `${rawMonth}-${year}`;
+};
+const formatMonthName = (month: string) => {
+  const date = monthDate(month);
+  return new Intl.DateTimeFormat("ru-RU", {
+    month: "long",
+    year: "numeric",
+  }).format(date);
+};
+const monthEndDate = (month: string) => {
+  const [year, rawMonth] = month.split("-").map(Number);
+  const date = new Date(year, rawMonth, 0);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+};
+type MonthDay = {
+  date: string;
+  day: number;
+  weekday: string;
+};
+const monthDaysFor = (month: string): MonthDay[] => {
+  const [year, rawMonth] = month.split("-").map(Number);
+  const days = new Date(year, rawMonth, 0).getDate();
+  return Array.from({ length: days }, (_, i) => {
+    const date = new Date(year, rawMonth - 1, i + 1);
+    const weekday = new Intl.DateTimeFormat("ru-RU", {
+      weekday: "short",
+    }).format(date);
+    return {
+      date: `${year}-${String(rawMonth).padStart(2, "0")}-${String(i + 1).padStart(2, "0")}`,
+      day: i + 1,
+      weekday,
+    };
+  });
+};
 const parseDisplayDate = (date: string) => {
   const match = date.trim().match(/^(\d{2})[-.](\d{2})[-.](\d{4})$/);
   return match ? `${match[3]}-${match[2]}-${match[1]}` : date;
@@ -309,6 +357,10 @@ const hasBolshakovEarlyLeaveException = (name?: string) =>
   employeeNameHasParts(name, ["большаков", "константин", "александрович"]) ||
   employeeNameHasParts(name, ["большаков", "сергей", "александрович"]);
 function App() {
+  const [selectedMonth, setSelectedMonth] = useState(currentMonthValue);
+  const selectedMonthDays = monthDaysFor(selectedMonth);
+  const selectedMonthOptions = monthOptions(selectedMonth);
+  const selectedMonthEnd = monthEndDate(selectedMonth);
   const [role, setRole] = useState<Role | null>(
     () =>
       localStorage.getItem(authTokenKey)
@@ -377,8 +429,8 @@ function App() {
       fetch("/api/employees").then((r) =>
         r.ok ? r.json() : Promise.reject(new Error("API недоступен")),
       ),
-      fetch("/api/skud-days?month=2026-07").then((r) => (r.ok ? r.json() : [])),
-      fetch("/api/schedule-overrides?month=2026-07").then((r) =>
+      fetch(`/api/skud-days?month=${selectedMonth}`).then((r) => (r.ok ? r.json() : [])),
+      fetch(`/api/schedule-overrides?month=${selectedMonth}`).then((r) =>
         r.ok ? r.json() : [],
       ),
     ])
@@ -403,7 +455,7 @@ function App() {
         setGlobalOverrides([]);
         setEmployees([]);
       });
-  }, [role]);
+  }, [role, selectedMonth]);
   useEffect(() => {
     window.addEventListener("worktime:auth-expired", logout);
     return () => window.removeEventListener("worktime:auth-expired", logout);
@@ -427,6 +479,12 @@ function App() {
     setPage(p);
     setSelected(e || null);
     setMenu(false);
+    scrollTo(0, 0);
+  };
+  const changeMonth = (month: string) => {
+    setSelectedMonth(month);
+    setSelected(null);
+    if (["detail", "schedule", "combo"].includes(page)) setPage("timesheet");
     scrollTo(0, 0);
   };
   return (
@@ -542,9 +600,20 @@ function App() {
           </button>
           <div>
             <b>{title(page)}</b>
-            <small>06-07-2026, понедельник</small>
+            <small>{formatMonthName(selectedMonth)}</small>
           </div>
           <div className="headerRight">
+            <select
+              className="monthSelect"
+              value={selectedMonth}
+              onChange={(event) => changeMonth(event.target.value)}
+            >
+              {selectedMonthOptions.map((month) => (
+                <option key={month} value={month}>
+                  {formatMonthLabel(month)}
+                </option>
+              ))}
+            </select>
             <span className="sync">
               <i />
               {skudReadyThrough
@@ -565,6 +634,8 @@ function App() {
               overrides={globalOverrides}
               accountName={accounts[user]?.name}
               skudReadyThrough={skudReadyThrough}
+              selectedMonth={selectedMonth}
+              selectedMonthEnd={selectedMonthEnd}
             />
           )}{" "}
           {page === "timesheet" && (
@@ -575,6 +646,8 @@ function App() {
               user={user}
               onOverridesChange={setGlobalOverrides}
               skudReadyThrough={skudReadyThrough}
+              selectedMonth={selectedMonth}
+              monthDays={selectedMonthDays}
             />
           )}{" "}
           {page === "problems" && (
@@ -593,6 +666,7 @@ function App() {
               go={go}
               user={user}
               skudReadyThrough={skudReadyThrough}
+              selectedMonth={selectedMonth}
               onOverrideSave={(row: WorkOverride) =>
                 setGlobalOverrides((rows) => upsertOverride(rows, row))
               }
@@ -624,7 +698,12 @@ function App() {
               }
             />
           )}{" "}
-          {page === "approval" && <Approval employees={scopedEmployees} />}{" "}
+          {page === "approval" && (
+            <Approval
+              employees={scopedEmployees}
+              selectedMonth={selectedMonth}
+            />
+          )}{" "}
           {page === "import" && (
             <SkudImport
               onImport={setEmployees}
@@ -643,6 +722,8 @@ function App() {
                 employees={scopedEmployees}
                 role={role}
                 user={user}
+                selectedMonth={selectedMonth}
+                monthDays={selectedMonthDays}
               />
             )
           )}
@@ -660,7 +741,12 @@ function App() {
           )}
           {page === "exceptions" && role === "admin" && <AdminExceptions />}
           {page === "audit" && role === "admin" && (
-            <AuditLog employees={employees} user={user} />
+            <AuditLog
+              employees={employees}
+              user={user}
+              selectedMonth={selectedMonth}
+              monthOptions={selectedMonthOptions}
+            />
           )}
         </section>
       </main>
@@ -941,6 +1027,8 @@ function Dashboard({
   overrides,
   accountName,
   skudReadyThrough,
+  selectedMonth,
+  selectedMonthEnd,
 }: {
   role: Role;
   go: any;
@@ -948,6 +1036,8 @@ function Dashboard({
   overrides: WorkOverride[];
   accountName?: string;
   skudReadyThrough?: string;
+  selectedMonth: string;
+  selectedMonthEnd: string;
 }) {
   const openProblems = employees.filter((e) =>
     isOpenProblem(e, overrides, skudReadyThrough),
@@ -971,8 +1061,8 @@ function Dashboard({
         <div className="dateCard">
           <CalendarCheck />
           <div>
-            <b>07-2026</b>
-            <small>Табель открыт до 31-07-2026</small>
+            <b>{formatMonthLabel(selectedMonth)}</b>
+            <small>Табель открыт до {formatDate(selectedMonthEnd)}</small>
           </div>
         </div>
       </div>
@@ -1041,7 +1131,7 @@ function Dashboard({
           <Quick
             icon={<CalendarCheck />}
             title="Открыть табель"
-            text="Данные за 06-07-2026"
+            text={`Данные за ${formatMonthName(selectedMonth)}`}
             onClick={() => go("timesheet")}
           />
           <Quick
@@ -1154,18 +1244,6 @@ type OverrideAudit = {
   snapshot: WorkOverride;
   created_at: string;
 };
-const monthStart = "2026-07-01";
-const monthDays = Array.from({ length: 31 }, (_, i) => {
-  const date = new Date(2026, 6, i + 1),
-    weekday = new Intl.DateTimeFormat("ru-RU", { weekday: "short" }).format(
-      date,
-    );
-  return {
-    date: `2026-07-${String(i + 1).padStart(2, "0")}`,
-    day: i + 1,
-    weekday,
-  };
-});
 const dayDiff = (from: string, to: string) =>
   Math.floor((Date.parse(to) - Date.parse(from)) / 86400000);
 const localDateString = (date = new Date()) =>
@@ -1373,7 +1451,7 @@ const cellTimeText = (cell: TimesheetCell) => {
 };
 function plannedCellFor(
   e: Employee,
-  d: (typeof monthDays)[number],
+  d: MonthDay,
   planAnchorDate?: string,
 ): TimesheetCell {
   const base = { date: d.date, day: d.day, weekday: d.weekday };
@@ -1455,7 +1533,7 @@ function plannedCellFor(
 }
 function cellFor(
   e: Employee,
-  d: (typeof monthDays)[number],
+  d: MonthDay,
   fact?: Employee,
   overrides: WorkOverride[] = [],
   planAnchorDate?: string,
@@ -1591,6 +1669,8 @@ function Timesheet({
   user,
   onOverridesChange,
   skudReadyThrough,
+  selectedMonth,
+  monthDays,
 }: {
   employees: Employee[];
   go: any;
@@ -1598,6 +1678,8 @@ function Timesheet({
   user: string;
   onOverridesChange?: (rows: WorkOverride[]) => void;
   skudReadyThrough?: string;
+  selectedMonth: string;
+  monthDays: MonthDay[];
 }) {
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("all");
@@ -1607,17 +1689,19 @@ function Timesheet({
     cell: TimesheetCell;
   } | null>(null);
   useEffect(() => {
-    fetch("/api/schedule-overrides?month=2026-07")
+    fetch(`/api/schedule-overrides?month=${selectedMonth}`)
       .then((r) => (r.ok ? r.json() : []))
       .then((rows) => {
         setOverrides(rows);
+        setOpened(null);
         onOverridesChange?.(rows);
       })
       .catch(() => {
         setOverrides([]);
+        setOpened(null);
         onOverridesChange?.([]);
       });
-  }, [onOverridesChange]);
+  }, [onOverridesChange, selectedMonth]);
   const roster = Array.from(
     employees
       .reduce((map, e) => {
@@ -1677,11 +1761,15 @@ function Timesheet({
     );
   const visibleTotal = list.reduce((sum, e) => sum + monthTotal(e), 0);
   const reviewCount = list.filter((e) => e.needsReview).length;
+  const monthGridStyle = {
+    gridTemplateColumns: `minmax(250px,1.45fr) repeat(${monthDays.length},minmax(66px,72px)) minmax(80px,.45fr)`,
+    minWidth: `${330 + monthDays.length * 72}px`,
+  };
   return (
     <>
       <PageHead
         eye="УЧЕТ РАБОЧЕГО ВРЕМЕНИ"
-        title="Табель за июль"
+        title={`Табель за ${formatMonthName(selectedMonth)}`}
         text="Месячная сетка по подразделениям: факт из СКУД, корректировки и пометки"
       />
       <div className="timesheetSummary">
@@ -1766,7 +1854,7 @@ function Timesheet({
               <b>{group.rows.length} сотрудников</b>
             </div>
             <div className="monthGridWrap">
-              <div className="monthGrid monthGridHead">
+              <div className="monthGrid monthGridHead" style={monthGridStyle}>
                 <div className="employeeCol">Сотрудник</div>
                 {monthDays.map((d) => (
                   <div
@@ -1785,7 +1873,7 @@ function Timesheet({
                 <div className="totalCol">Итого</div>
               </div>
               {group.rows.map((e) => (
-                <div className="monthGrid monthGridRow" key={e.id}>
+                <div className="monthGrid monthGridRow" key={e.id} style={monthGridStyle}>
                   <button className="employeeCol employeeName" onClick={() => go("detail", e)}>
                     <span className="avatar sm">{e.initials}</span>
                     <span>
@@ -2520,12 +2608,13 @@ function Detail({
   update,
   user,
   skudReadyThrough,
+  selectedMonth,
   onOverrideSave,
 }: any) {
   const actorName = accounts[user]?.name || user || role;
   const payableFact = payableFactHours(e);
   const [correction, setCorrection] = useState({
-    date: e.date || "2026-07-06",
+    date: e.date || `${selectedMonth || currentMonthValue()}-01`,
     start: e.entry !== "—" ? e.entry : "08:00",
     end: e.exit !== "—" ? e.exit : "17:00",
     reason: "missing_entry" as CorrectionReason,
@@ -2594,7 +2683,7 @@ function Detail({
       <div className="detailHead">
         <div className="avatar xl">{e.initials}</div>
         <div>
-          <span className="eyebrow">КАРТОЧКА ЗА {formatDate(e.date || "2026-07-06")}</span>
+          <span className="eyebrow">КАРТОЧКА ЗА {formatDate(e.date || `${selectedMonth || currentMonthValue()}-01`)}</span>
           <h1>{e.name}</h1>
           <p>
             {e.department} · {formatScheduleText(e.schedule)}
@@ -2999,7 +3088,7 @@ function EditPage({ title, text, e, go, onSave, children }: any) {
           <span className="avatar">{e.initials}</span>
           <div>
             <b>{e.name}</b>
-            <small>{formatDate(e.date || "2026-07-06")} · {e.department}</small>
+            <small>{formatDate(e.date || `${currentMonthValue()}-01`)} · {e.department}</small>
           </div>
         </div>
         {children}
@@ -3015,12 +3104,12 @@ function EditPage({ title, text, e, go, onSave, children }: any) {
     </>
   );
 }
-function Approval({ employees }: any) {
+function Approval({ employees, selectedMonth }: any) {
   const [done, setDone] = useState(false);
   return (
     <>
       <PageHead
-        eye="ИЮЛЬ 2026"
+        eye={formatMonthName(selectedMonth).toUpperCase()}
         title="Подтверждение табеля"
         text="Механический цех · 24 сотрудника"
       />
@@ -3251,10 +3340,14 @@ function BossEmployeeCalendar({
   employees,
   role,
   user,
+  selectedMonth,
+  monthDays,
 }: {
   employees: Employee[];
   role: Role;
   user: string;
+  selectedMonth: string;
+  monthDays: MonthDay[];
 }) {
   const roster = Array.from(
     employees
@@ -3272,14 +3365,17 @@ function BossEmployeeCalendar({
     ),
   );
   const today = localDateString();
-  const monthEnd = "2026-07-31";
+  const selectedMonthStart = `${selectedMonth}-01`;
+  const defaultPeriodDate = today.startsWith(selectedMonth)
+    ? today
+    : selectedMonthStart;
   const openEndedHorizonDays = 365;
   const [selectedId, setSelectedId] = useState(roster[0]?.id || 0);
   const [overrides, setOverrides] = useState<WorkOverride[]>([]);
   type StaffPeriodMode = "schedule_change" | "day_off" | "sick_leave" | "vacation";
   const [mode, setMode] = useState<StaffPeriodMode>("schedule_change");
-  const [from, setFrom] = useState(today);
-  const [to, setTo] = useState(today);
+  const [from, setFrom] = useState(defaultPeriodDate);
+  const [to, setTo] = useState(defaultPeriodDate);
   const [noEnd, setNoEnd] = useState(false);
   const [start, setStart] = useState("08:00");
   const [end, setEnd] = useState("17:00");
@@ -3296,13 +3392,19 @@ function BossEmployeeCalendar({
     roster[0];
   const actorName = accounts[user]?.name || user || role;
   const loadOverrides = () =>
-    fetch("/api/schedule-overrides?month=2026-07")
+    fetch(`/api/schedule-overrides?month=${selectedMonth}`)
       .then((r) => (r.ok ? r.json() : []))
       .then(setOverrides)
       .catch(() => setOverrides([]));
   useEffect(() => {
     loadOverrides();
-  }, []);
+  }, [selectedMonth]);
+  useEffect(() => {
+    setFrom(defaultPeriodDate);
+    setTo(defaultPeriodDate);
+    setPeriodCloseDates({});
+    setEditingPeriodKey("");
+  }, [defaultPeriodDate]);
   const employeeOverrides = overrides.filter(
     (row) => row.employee_id === selected?.id,
   );
@@ -3376,7 +3478,7 @@ function BossEmployeeCalendar({
     loadOverrides();
   };
   const closePeriod = (period: (typeof assignedPeriods)[number]) => {
-    const closeDate = periodCloseDates[period.key] || today;
+    const closeDate = periodCloseDates[period.key] || defaultPeriodDate;
     bulkDeletePeriod(period, closeDate);
   };
   const removePeriod = (period: (typeof assignedPeriods)[number]) => {
@@ -3392,8 +3494,8 @@ function BossEmployeeCalendar({
   const resetPeriodForm = () => {
     setEditingPeriodKey("");
     setMode("schedule_change");
-    setFrom(today);
-    setTo(today);
+    setFrom(defaultPeriodDate);
+    setTo(defaultPeriodDate);
     setNoEnd(false);
     setStart("08:00");
     setEnd("17:00");
@@ -3512,7 +3614,7 @@ function BossEmployeeCalendar({
         <div className="panel staffCalendar">
           <div className="panelHead">
             <div>
-              <span className="eyebrow">КАЛЕНДАРЬ 07-2026</span>
+              <span className="eyebrow">КАЛЕНДАРЬ {formatMonthLabel(selectedMonth)}</span>
               <h2>{selected?.name || "Сотрудник не выбран"}</h2>
             </div>
             <button
@@ -3578,7 +3680,7 @@ function BossEmployeeCalendar({
                     <label>
                       Закрыть с даты
                       <DatePickerInput
-                        value={periodCloseDates[period.key] || today}
+                        value={periodCloseDates[period.key] || defaultPeriodDate}
                         onChange={(value) =>
                           setPeriodCloseDates({
                             ...periodCloseDates,
@@ -4373,10 +4475,20 @@ const auditOverrideText = (row?: WorkOverride) => {
   if (row.comment) parts.push(row.comment);
   return parts.filter(Boolean).join(" · ");
 };
-function AuditLog({ employees, user }: { employees: Employee[]; user: string }) {
+function AuditLog({
+  employees,
+  user,
+  selectedMonth,
+  monthOptions,
+}: {
+  employees: Employee[];
+  user: string;
+  selectedMonth: string;
+  monthOptions: string[];
+}) {
   const [rows, setRows] = useState<OverrideAudit[]>([]);
   const [actor, setActor] = useState("");
-  const [month, setMonth] = useState("2026-07");
+  const [month, setMonth] = useState(selectedMonth);
   const [message, setMessage] = useState("");
   const actorName = accounts[user]?.name || user || "admin";
   const load = async () => {
@@ -4392,6 +4504,9 @@ function AuditLog({ employees, user }: { employees: Employee[]; user: string }) 
   useEffect(() => {
     load().catch(() => setMessage("Не удалось загрузить журнал"));
   }, [actor, month]);
+  useEffect(() => {
+    setMonth(selectedMonth);
+  }, [selectedMonth]);
   const bossNames = Array.from(
     new Set(
       [
@@ -4439,7 +4554,11 @@ function AuditLog({ employees, user }: { employees: Employee[]; user: string }) 
       </div>
       <div className="toolbar auditToolbar">
         <select value={month} onChange={(event) => setMonth(event.target.value)}>
-          <option value="2026-07">07-2026</option>
+          {monthOptions.map((value) => (
+            <option key={value} value={value}>
+              {formatMonthLabel(value)}
+            </option>
+          ))}
         </select>
         <select value={actor} onChange={(event) => setActor(event.target.value)}>
           <option value="">Все начальники</option>
