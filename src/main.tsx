@@ -1363,7 +1363,7 @@ const durationHoursBetween = (
     return durationHours(start, end);
   const diff =
     dayDiff(startDate, endDate) * 24 * 60 + timeMinutes(end) - timeMinutes(start);
-  if (Number.isNaN(diff) || diff < 0 || diff > 24 * 60) return 0;
+  if (Number.isNaN(diff) || diff <= 0) return 0;
   return Math.round((diff / 60) * 100) / 100;
 };
 const roundHours = (hours: number) => Math.round(hours * 100) / 100;
