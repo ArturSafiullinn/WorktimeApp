@@ -60,6 +60,7 @@ type Employee = {
   scheduleKind?: string;
   schedulePattern?: any;
   scheduleEffectiveFrom?: string;
+  schedulePaidHours?: number;
   needsReview?: boolean;
   reviewNote?: string;
 };
@@ -229,6 +230,7 @@ const employeeFromApi = (e: any): Employee => ({
   scheduleKind: e.schedule_kind,
   schedulePattern: e.cycle_pattern,
   scheduleEffectiveFrom: e.schedule_effective_from?.slice(0, 10),
+  schedulePaidHours: nullableNumber(e.paid_hours),
   needsReview: e.needs_review,
   reviewNote: e.review_note,
   entry: formatTime(e.entry || "—"),
@@ -1373,7 +1375,8 @@ const isRegularSchedule = (e: Employee) =>
   /08:00.*17:00|09:00.*18:00/.test(formatScheduleText(e.schedule));
 const lunchHoursFor = (e: Employee, rawHours: number) =>
   isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
-const plannedPaidHoursFor = (e: Employee) => (isRegularSchedule(e) ? 8 : null);
+const plannedPaidHoursFor = (e: Employee) =>
+  e.schedulePaidHours || (isRegularSchedule(e) ? 8 : null);
 const payableManualHours = (
   e: Employee,
   start: string,
@@ -1413,8 +1416,10 @@ const hasCompensatedEarlyLeave = (e: Employee) => {
 };
 const payableFactHours = (e: Employee) => {
   const fact = Number(e.fact) || 0;
-  if (!fact || !isRegularSchedule(e) || e.entry === "—" || e.exit === "—")
-    return fact;
+  const plannedHours = plannedPaidHoursFor(e);
+  if (!fact) return fact;
+  if (!isRegularSchedule(e) || e.entry === "—" || e.exit === "—")
+    return plannedHours == null ? fact : Math.min(fact, plannedHours);
   if (hasCompensatedEarlyLeave(e)) return plannedPaidHoursFor(e) || fact;
   return Math.min(fact, payableManualHours(e, e.entry, e.exit));
 };
