@@ -2392,11 +2392,9 @@ function TimesheetCellModal({
                 <div className="fieldRow">
                   <label>
                     Дата входа
-                    <input
-                      type="date"
+                    <DatePickerInput
                       value={edit.startDate}
-                      onChange={(event) => {
-                        const startDate = event.target.value;
+                      onChange={(startDate) => {
                         const currentDistance = dayDiff(startDate, edit.endDate);
                         setEdit({
                           ...edit,
@@ -2411,14 +2409,11 @@ function TimesheetCellModal({
                   </label>
                   <label>
                     Дата выхода
-                    <input
-                      type="date"
+                    <DatePickerInput
                       min={edit.startDate}
                       max={addDays(edit.startDate, 1)}
                       value={edit.endDate}
-                      onChange={(event) =>
-                        setEdit({ ...edit, endDate: event.target.value })
-                      }
+                      onChange={(endDate) => setEdit({ ...edit, endDate })}
                     />
                   </label>
                 </div>
@@ -3928,9 +3923,13 @@ function BossEmployeeCalendar({
 function DatePickerInput({
   value,
   onChange,
+  min,
+  max,
 }: {
   value: string;
   onChange: (value: string) => void;
+  min?: string;
+  max?: string;
 }) {
   const pickerRef = useRef<HTMLInputElement | null>(null);
   const openPicker = () => {
@@ -3951,6 +3950,8 @@ function DatePickerInput({
         className="nativeDateInput"
         type="date"
         value={value}
+        min={min}
+        max={max}
         onChange={(event) => onChange(event.target.value)}
         tabIndex={-1}
       />
