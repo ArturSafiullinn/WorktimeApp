@@ -1376,7 +1376,9 @@ const isRegularSchedule = (e: Employee) =>
 const lunchHoursFor = (e: Employee, rawHours: number) =>
   isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
 const plannedPaidHoursFor = (e: Employee) =>
-  e.schedulePaidHours || (isRegularSchedule(e) ? 8 : null);
+  e.scheduleCode === "foundry_2x2"
+    ? null
+    : e.schedulePaidHours || (isRegularSchedule(e) ? 8 : null);
 const payableManualHours = (
   e: Employee,
   start: string,
