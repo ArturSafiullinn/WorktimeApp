@@ -295,6 +295,12 @@ const ensureScheduleOverrideTables = async () => {
     `ALTER TABLE schedule_overrides DROP CONSTRAINT IF EXISTS schedule_overrides_employee_id_work_date_key`,
   );
   await pool.query(
+    `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS start_date DATE`,
+  );
+  await pool.query(
+    `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS end_date DATE`,
+  );
+  await pool.query(
     `ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0`,
   );
   await pool.query(
@@ -324,9 +330,22 @@ const ensureScheduleOverrideTables = async () => {
 };
 const overrideSelectFor = (alias = "") => {
   const p = alias ? `${alias}.` : "";
-  return `${p}id,${p}employee_id,to_char(${p}work_date,'YYYY-MM-DD') work_date,to_char(${p}start_time,'HH24:MI') start_time,to_char(${p}end_time,'HH24:MI') end_time,${p}reason,${p}comment,${p}changed_by,${p}leave_minutes,${p}combo_hours::float combo_hours,${p}overtime_hours::float overtime_hours,${p}combo_employee_id,${p}combo_employee_name,to_char(${p}created_at,'YYYY-MM-DD HH24:MI') created_at`;
+  return `${p}id,${p}employee_id,to_char(${p}work_date,'YYYY-MM-DD') work_date,to_char(COALESCE(${p}start_date,${p}work_date),'YYYY-MM-DD') start_date,to_char(COALESCE(${p}end_date,${p}work_date),'YYYY-MM-DD') end_date,to_char(${p}start_time,'HH24:MI') start_time,to_char(${p}end_time,'HH24:MI') end_time,${p}reason,${p}comment,${p}changed_by,${p}leave_minutes,${p}combo_hours::float combo_hours,${p}overtime_hours::float overtime_hours,${p}combo_employee_id,${p}combo_employee_name,to_char(${p}created_at,'YYYY-MM-DD HH24:MI') created_at`;
 };
 const overrideSelect = overrideSelectFor();
+const validOverrideDates = (workDate, startDate, endDate) => {
+  const base = String(workDate || "");
+  const start = String(startDate || base);
+  const end = String(endDate || base);
+  if (
+    !/^\d{4}-\d{2}-\d{2}$/.test(base) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(start) ||
+    !/^\d{4}-\d{2}-\d{2}$/.test(end)
+  )
+    return false;
+  const diff = Math.round((Date.parse(end) - Date.parse(start)) / 86400000);
+  return diff >= 0 && diff <= 1;
+};
 const auditOverride = async (client, action, row, actionBy) => {
   await client.query(
     `INSERT INTO schedule_override_audit(override_id,action,employee_id,work_date,changed_by,action_by,snapshot)VALUES($1,$2,$3,$4,$5,$6,$7::jsonb)`,
@@ -838,6 +857,8 @@ app.post("/api/schedule-overrides", requireRole("admin", "boss"), async (req, re
     const {
       employee_id,
       work_date,
+      start_date,
+      end_date,
       start_time,
       end_time,
       reason,
@@ -851,15 +872,19 @@ app.post("/api/schedule-overrides", requireRole("admin", "boss"), async (req, re
     } = req.body;
     if (!employee_id || !work_date || !start_time || !end_time)
       return res.status(400).json({ error: "Не хватает данных корректировки" });
+    if (!validOverrideDates(work_date, start_date, end_date))
+      return res.status(400).json({ error: "Дата выхода может отличаться от даты входа максимум на 1 день" });
     if (!(await accountCanAccessEmployee(req.account, employee_id)))
       return safeError(res, 403, "Недостаточно прав");
     await ensureScheduleOverrideTables();
     await client.query("BEGIN");
     const { rows } = await client.query(
-      `INSERT INTO schedule_overrides(employee_id,work_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${overrideSelect}`,
+      `INSERT INTO schedule_overrides(employee_id,work_date,start_date,end_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING ${overrideSelect}`,
       [
         employee_id,
         work_date,
+        start_date || work_date,
+        end_date || work_date,
         start_time,
         end_time,
         reason || "manual",
@@ -889,6 +914,8 @@ app.patch("/api/schedule-overrides/:id", requireRole("admin", "boss"), async (re
     const {
       start_time,
       end_time,
+      start_date,
+      end_date,
       reason,
       comment,
       changed_by,
@@ -915,12 +942,18 @@ app.patch("/api/schedule-overrides/:id", requireRole("admin", "boss"), async (re
       await client.query("ROLLBACK");
       return safeError(res, 403, "Недостаточно прав");
     }
+    if (!validOverrideDates(existing.rows[0].work_date, start_date, end_date)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Дата выхода может отличаться от даты входа максимум на 1 день" });
+    }
     const { rows } = await client.query(
-      `UPDATE schedule_overrides SET start_time=$2,end_time=$3,reason=$4,comment=$5,leave_minutes=$6,combo_hours=$7,overtime_hours=$8,combo_employee_id=$9,combo_employee_name=$10 WHERE id=$1 RETURNING ${overrideSelect}`,
+      `UPDATE schedule_overrides SET start_time=$2,end_time=$3,start_date=$4,end_date=$5,reason=$6,comment=$7,leave_minutes=$8,combo_hours=$9,overtime_hours=$10,combo_employee_id=$11,combo_employee_name=$12 WHERE id=$1 RETURNING ${overrideSelect}`,
       [
         id,
         start_time,
         end_time,
+        start_date || existing.rows[0].work_date,
+        end_date || existing.rows[0].work_date,
         reason || existing.rows[0].reason,
         comment || null,
         Math.max(0, Number(leave_minutes) || 0),
@@ -1040,10 +1073,12 @@ app.post("/api/schedule-overrides/audit/:id/restore", requireRole("admin"), asyn
     }
     const row = audit.rows[0].snapshot;
     const duplicate = await client.query(
-      `SELECT 1 FROM schedule_overrides WHERE employee_id=$1 AND work_date=$2::date AND start_time=$3::time AND end_time=$4::time AND reason=$5 AND comment IS NOT DISTINCT FROM $6 AND changed_by=$7 AND leave_minutes=$8 AND combo_hours=$9 AND overtime_hours=$10 AND combo_employee_id IS NOT DISTINCT FROM $11 AND combo_employee_name IS NOT DISTINCT FROM $12 LIMIT 1`,
+      `SELECT 1 FROM schedule_overrides WHERE employee_id=$1 AND work_date=$2::date AND COALESCE(start_date,work_date)=COALESCE($3::date,$2::date) AND COALESCE(end_date,work_date)=COALESCE($4::date,$2::date) AND start_time=$5::time AND end_time=$6::time AND reason=$7 AND comment IS NOT DISTINCT FROM $8 AND changed_by=$9 AND leave_minutes=$10 AND combo_hours=$11 AND overtime_hours=$12 AND combo_employee_id IS NOT DISTINCT FROM $13 AND combo_employee_name IS NOT DISTINCT FROM $14 LIMIT 1`,
       [
         row.employee_id,
         row.work_date,
+        row.start_date || row.work_date,
+        row.end_date || row.work_date,
         row.start_time,
         row.end_time,
         row.reason,
@@ -1061,10 +1096,12 @@ app.post("/api/schedule-overrides/audit/:id/restore", requireRole("admin"), asyn
       return res.status(409).json({ error: "Такая правка уже есть в табеле" });
     }
     const inserted = await client.query(
-      `INSERT INTO schedule_overrides(employee_id,work_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING ${overrideSelect}`,
+      `INSERT INTO schedule_overrides(employee_id,work_date,start_date,end_date,start_time,end_time,reason,comment,changed_by,leave_minutes,combo_hours,overtime_hours,combo_employee_id,combo_employee_name)VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING ${overrideSelect}`,
       [
         row.employee_id,
         row.work_date,
+        row.start_date || row.work_date,
+        row.end_date || row.work_date,
         row.start_time,
         row.end_time,
         row.reason,

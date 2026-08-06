@@ -9,6 +9,8 @@ ALTER TABLE employees ADD COLUMN IF NOT EXISTS review_note TEXT;
 CREATE TABLE IF NOT EXISTS employee_schedules(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),schedule_id BIGINT NOT NULL REFERENCES schedule_templates(id),effective_from DATE NOT NULL DEFAULT '2000-01-01',effective_to DATE,source TEXT NOT NULL DEFAULT 'WorkSchedule',UNIQUE(employee_id,effective_from));
 CREATE TABLE IF NOT EXISTS schedule_overrides(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,start_time TIME NOT NULL,end_time TIME NOT NULL,reason TEXT NOT NULL,comment TEXT,changed_by TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date));
 ALTER TABLE schedule_overrides DROP CONSTRAINT IF EXISTS schedule_overrides_employee_id_work_date_key;
+ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS start_date DATE;
+ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS end_date DATE;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0;

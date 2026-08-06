@@ -336,6 +336,15 @@ const formatTime = (time?: string) => {
 };
 const formatRange = (start?: string, end?: string) =>
   `${formatTime(start)}–${formatTime(end)}`;
+const formatDateTimeRange = (
+  start?: string,
+  end?: string,
+  startDate?: string,
+  endDate?: string,
+) =>
+  startDate && endDate && startDate !== endDate
+    ? `${formatDate(startDate)} ${formatTime(start)}–${formatDate(endDate)} ${formatTime(end)}`
+    : formatRange(start, end);
 const formatScheduleText = (text?: string) =>
   (text || "").replace(/\b(\d{1,2}):(\d{2})(?::\d{2})?\b/g, (_x, h, m) =>
     `${String(h).padStart(2, "0")}:${m}`,
@@ -1200,6 +1209,8 @@ type TimesheetCell = {
     | "unknown";
   start?: string;
   end?: string;
+  startDate?: string;
+  endDate?: string;
   hours: number;
   baseHours: number;
   comboHours: number;
@@ -1219,6 +1230,8 @@ type WorkOverride = {
   id?: number;
   employee_id: number;
   work_date: string;
+  start_date?: string;
+  end_date?: string;
   start_time: string;
   end_time: string;
   reason: string;
@@ -1340,6 +1353,19 @@ const durationHours = (start: string, end: string) => {
   if (diff < 0) diff += 24 * 60;
   return Math.round((diff / 60) * 100) / 100;
 };
+const durationHoursBetween = (
+  start: string,
+  end: string,
+  startDate?: string,
+  endDate?: string,
+) => {
+  if (!startDate || !endDate || startDate === endDate)
+    return durationHours(start, end);
+  const diff =
+    dayDiff(startDate, endDate) * 24 * 60 + timeMinutes(end) - timeMinutes(start);
+  if (Number.isNaN(diff) || diff < 0 || diff > 24 * 60) return 0;
+  return Math.round((diff / 60) * 100) / 100;
+};
 const roundHours = (hours: number) => Math.round(hours * 100) / 100;
 const isRegularSchedule = (e: Employee) =>
   e.scheduleCode === "standard" ||
@@ -1353,8 +1379,10 @@ const payableManualHours = (
   start: string,
   end: string,
   leaveMinutes = 0,
+  startDate?: string,
+  endDate?: string,
 ) => {
-  const rawHours = durationHours(start, end);
+  const rawHours = durationHoursBetween(start, end, startDate, endDate);
   const workedHours = Math.max(
     0,
     rawHours - lunchHoursFor(e, rawHours) - leaveMinutes / 60,
@@ -1395,8 +1423,10 @@ const suggestedOvertimeHours = (
   start: string,
   end: string,
   leaveMinutes = 0,
+  startDate?: string,
+  endDate?: string,
 ) => {
-  const rawHours = durationHours(start, end);
+  const rawHours = durationHoursBetween(start, end, startDate, endDate);
   const workedHours = Math.max(
     0,
     rawHours - lunchHoursFor(e, rawHours) - leaveMinutes / 60,
@@ -1577,6 +1607,8 @@ function cellFor(
       ? "00:00"
       : timeOverride?.end_time ||
       (fact?.exit && fact.exit !== "—" ? fact.exit : planned.end || "17:00");
+    const startDate = timeOverride?.start_date || d.date;
+    const endDate = timeOverride?.end_date || d.date;
     const leaveMinutes = sortedOverrides.reduce(
       (sum, row) => sum + Math.max(0, Number(row.leave_minutes) || 0),
       0,
@@ -1595,7 +1627,7 @@ function cellFor(
     const manualBaseHours = absenceActive
       ? 0
       : sortedOverrides.length
-      ? payableManualHours(e, start, end, leaveMinutes)
+      ? payableManualHours(e, start, end, leaveMinutes, startDate, endDate)
       : baseHours;
     const hours = roundHours(manualBaseHours + overtimeHours + comboHours);
     const relatedNames = Array.from(
@@ -1643,6 +1675,8 @@ function cellFor(
           : "fact",
       start,
       end,
+      startDate,
+      endDate,
       hours,
       baseHours: manualBaseHours,
       comboHours,
@@ -2028,6 +2062,14 @@ function TimesheetCellModal({
       : opened.employee.exit !== "—"
         ? opened.employee.exit
         : "17:00";
+  const isOvernightSchedule =
+    ["security24", "day24"].includes(opened.employee.scheduleCode || "") ||
+    opened.employee.scheduleKind === "rolling" ||
+    (opened.cell.start && opened.cell.end && opened.cell.start === opened.cell.end);
+  const initialStartDate = opened.cell.startDate || opened.cell.date;
+  const initialEndDate =
+    opened.cell.endDate ||
+    (isOvernightSchedule ? addDays(opened.cell.date, 1) : opened.cell.date);
   const defaultReason =
     opened.cell.status === "Нет входа"
       ? "missing_entry"
@@ -2035,6 +2077,8 @@ function TimesheetCellModal({
         ? "missing_exit"
         : "forgot_pass";
   const defaultEdit = () => ({
+    startDate: initialStartDate,
+    endDate: initialEndDate,
     start: initialStart,
     end: initialEnd,
     reason: defaultReason as CorrectionReason,
@@ -2061,12 +2105,16 @@ function TimesheetCellModal({
     edit.start,
     edit.end,
     leaveMinutes,
+    edit.startDate,
+    edit.endDate,
   );
   const baseHours = payableManualHours(
     opened.employee,
     edit.start,
     edit.end,
     leaveMinutes,
+    edit.startDate,
+    edit.endDate,
   );
   const isAbsenceReason = zeroWorkdayReasons.has(edit.reason);
   const previewBaseHours = isAbsenceReason ? 0 : baseHours;
@@ -2075,22 +2123,27 @@ function TimesheetCellModal({
   const totalHours = roundHours(
     previewBaseHours + previewOvertimeHours + previewComboHours,
   );
-  const needsOnlyEntry =
-    !isAbsenceReason &&
-    (edit.reason === "missing_entry" || opened.cell.status === "Нет входа");
-  const needsOnlyExit =
-    !isAbsenceReason &&
-    (edit.reason === "missing_exit" || opened.cell.status === "Нет выхода");
-  const showStartInput = !isAbsenceReason && !needsOnlyExit;
-  const showEndInput = !isAbsenceReason && !needsOnlyEntry;
   const needsRelatedEmployee =
     !isAbsenceReason && (comboHours > 0 || edit.reason === "substitution");
   const save = async () => {
     setSaveError("");
+    if (!isAbsenceReason) {
+      const dateDistance = dayDiff(edit.startDate, edit.endDate);
+      if (dateDistance < 0 || dateDistance > 1) {
+        setSaveError("Дата выхода может отличаться от даты входа максимум на 1 день");
+        return;
+      }
+      if (!durationHoursBetween(edit.start, edit.end, edit.startDate, edit.endDate)) {
+        setSaveError("Проверьте дату и время входа/выхода");
+        return;
+      }
+    }
     setSaving(true);
     const payload = {
       employee_id: opened.employee.id,
       work_date: opened.cell.date,
+      start_date: isAbsenceReason ? opened.cell.date : edit.startDate,
+      end_date: isAbsenceReason ? opened.cell.date : edit.endDate,
       start_time: isAbsenceReason ? "00:00" : edit.start,
       end_time: isAbsenceReason ? "00:00" : edit.end,
       reason: edit.reason,
@@ -2152,6 +2205,8 @@ function TimesheetCellModal({
     setEditingOverrideId(row.id || null);
     setSaveError("");
     setEdit({
+      startDate: row.start_date || row.work_date || initialStartDate,
+      endDate: row.end_date || row.work_date || initialEndDate,
       start: row.start_time || initialStart,
       end: row.end_time || initialEnd,
       reason: (row.reason as CorrectionReason) || "forgot_pass",
@@ -2269,7 +2324,12 @@ function TimesheetCellModal({
                     <small>
                       {zeroWorkdayReasons.has(row.reason)
                         ? "Без рабочих часов"
-                        : formatRange(row.start_time, row.end_time)}
+                        : formatDateTimeRange(
+                            row.start_time,
+                            row.end_time,
+                            row.start_date || row.work_date,
+                            row.end_date || row.work_date,
+                          )}
                       {Number(row.leave_minutes) > 0
                         ? ` · отлучка ${row.leave_minutes} мин`
                         : ""}
@@ -2328,10 +2388,43 @@ function TimesheetCellModal({
               </select>
             </label>
             {!isAbsenceReason && (
-            <div className="fieldRow">
-              {showStartInput && (
+              <>
+                <div className="fieldRow">
+                  <label>
+                    Дата входа
+                    <input
+                      type="date"
+                      value={edit.startDate}
+                      onChange={(event) => {
+                        const startDate = event.target.value;
+                        const currentDistance = dayDiff(startDate, edit.endDate);
+                        setEdit({
+                          ...edit,
+                          startDate,
+                          endDate:
+                            currentDistance < 0 || currentDistance > 1
+                              ? startDate
+                              : edit.endDate,
+                        });
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Дата выхода
+                    <input
+                      type="date"
+                      min={edit.startDate}
+                      max={addDays(edit.startDate, 1)}
+                      value={edit.endDate}
+                      onChange={(event) =>
+                        setEdit({ ...edit, endDate: event.target.value })
+                      }
+                    />
+                  </label>
+                </div>
+                <div className="fieldRow">
                 <label>
-                  Вход
+                  Время входа
                   <input
                     type="text"
                     inputMode="numeric"
@@ -2349,10 +2442,8 @@ function TimesheetCellModal({
                     }
                   />
                 </label>
-              )}
-              {showEndInput && (
                 <label>
-                  Выход
+                  Время выхода
                   <input
                     type="text"
                     inputMode="numeric"
@@ -2370,8 +2461,8 @@ function TimesheetCellModal({
                     }
                   />
                 </label>
-              )}
-            </div>
+                </div>
+              </>
             )}
             {!isAbsenceReason && (
             <div className="fieldRow">
@@ -3671,7 +3762,12 @@ function BossEmployeeCalendar({
                           : ` · по ${formatDate(period.to)}`}
                         {" · "}
                         {sample.reason === "schedule_change"
-                          ? `${formatRange(sample.start_time, sample.end_time)} · `
+                          ? `${formatDateTimeRange(
+                              sample.start_time,
+                              sample.end_time,
+                              sample.start_date || sample.work_date,
+                              sample.end_date || sample.work_date,
+                            )} · `
                           : ""}
                         {sample.comment}
                       </small>
@@ -4464,7 +4560,12 @@ const auditOverrideText = (row?: WorkOverride) => {
     formatDate(row.work_date),
     zeroWorkdayReasons.has(row.reason)
       ? "без рабочих часов"
-      : formatRange(row.start_time, row.end_time),
+      : formatDateTimeRange(
+          row.start_time,
+          row.end_time,
+          row.start_date || row.work_date,
+          row.end_date || row.work_date,
+        ),
   ];
   if (Number(row.leave_minutes) > 0) parts.push(`отлучка ${row.leave_minutes} мин`);
   if (Number(row.overtime_hours) > 0)
