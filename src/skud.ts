@@ -77,6 +77,8 @@ function scheduleFor(id: number, department: string, date: string): Schedule {
   if (id === 154)
     return { start: 0, end: 1440, lunch: 0, minLunch: 0, cleanTime: true };
   const d = department.toLowerCase();
+  if (d.includes("служба безопасности"))
+    return { start: 420, end: 420, lunch: 0, minLunch: 0, overnight: true };
   if (d.includes("литей") || d.includes("тпа"))
     return { start: 480, end: 1200, lunch: 0, minLunch: 0 };
   return { start: 480, end: 1020, lunch: 60, minLunch: 300 };
@@ -355,7 +357,7 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
       const duration = 1440 - entry + exit;
       if (duration >= 6 * 60 && duration <= 18 * 60) {
         head.first = entry;
-        head.last = exit;
+        head.last = exit + 1440;
         head.count = Math.max(2, head.count + tail.count);
         head.overnightShift = true;
         tails.add(`${tail.id}|${tail.date}`);
@@ -364,7 +366,12 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
     }
   }
   // Суточники: как в WorkSchedule, склеиваем вход первого дня и выход следующего.
-  for (const id of overnightIds) {
+  const overnightCapableIds = new Set(
+    raw
+      .filter((r) => scheduleFor(r.id, r.department, r.date).overnight)
+      .map((r) => r.id),
+  );
+  for (const id of overnightCapableIds) {
     const group = raw
       .filter((r) => r.id === id)
       .sort((a, b) => a.date.localeCompare(b.date));
@@ -380,8 +387,9 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
         Math.abs(tail.last - s.end) <= SKUD_RULES.shiftToleranceMin;
       const duration = 1440 - head.first + tail.last;
       if (nearStart && nearEnd && duration >= 23 * 60 && duration <= 25 * 60) {
-        head.last = tail.last;
+        head.last = tail.last + 1440;
         head.count = Math.max(2, head.count + tail.count);
+        head.overnightShift = true;
         tails.add(`${tail.id}|${tail.date}`);
         i++;
       }
