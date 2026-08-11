@@ -371,9 +371,14 @@ const employeeNameHasParts = (name: string | undefined, parts: string[]) =>
 const hasBolshakovEarlyLeaveException = (name?: string) =>
   employeeNameHasParts(name, ["большаков", "константин", "александрович"]) ||
   employeeNameHasParts(name, ["большаков", "сергей", "александрович"]);
+const isLegacyDismissedArchiveEmployee = (employee: Employee) =>
+  employee.active === false &&
+  !employee.dismissedAt &&
+  normalizedEmployeeName(employee.department) === "уволенные";
 const employeeVisibleInMonth = (employee: Employee, month: string) =>
-  employee.active !== false ||
-  (!!employee.dismissedAt && month <= employee.dismissedAt.slice(0, 7));
+  !isLegacyDismissedArchiveEmployee(employee) &&
+  (employee.active !== false ||
+    (!!employee.dismissedAt && month <= employee.dismissedAt.slice(0, 7)));
 function App() {
   const [selectedMonth, setSelectedMonth] = useState(currentMonthValue);
   const selectedMonthDays = monthDaysFor(selectedMonth);
@@ -4095,7 +4100,9 @@ function EmployeeDirectory({
       .values(),
   );
   const activeEmployees = uniqueEmployees.filter((e) => e.active !== false);
-  const dismissedEmployees = uniqueEmployees.filter((e) => e.active === false);
+  const dismissedEmployees = uniqueEmployees.filter(
+    (e) => e.active === false && !isLegacyDismissedArchiveEmployee(e),
+  );
   const visibleEmployees =
     employeeStatus === "active" ? activeEmployees : dismissedEmployees;
   const list = visibleEmployees.filter((e) =>
