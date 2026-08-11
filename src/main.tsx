@@ -62,6 +62,7 @@ type Employee = {
   scheduleEffectiveFrom?: string;
   schedulePaidHours?: number;
   active?: boolean;
+  dismissedAt?: string;
   needsReview?: boolean;
   reviewNote?: string;
 };
@@ -233,6 +234,7 @@ const employeeFromApi = (e: any): Employee => ({
   scheduleEffectiveFrom: e.schedule_effective_from?.slice(0, 10),
   schedulePaidHours: nullableNumber(e.paid_hours),
   active: e.active !== false,
+  dismissedAt: e.dismissed_at?.slice(0, 10),
   needsReview: e.needs_review,
   reviewNote: e.review_note,
   entry: formatTime(e.entry || "—"),
@@ -369,6 +371,9 @@ const employeeNameHasParts = (name: string | undefined, parts: string[]) =>
 const hasBolshakovEarlyLeaveException = (name?: string) =>
   employeeNameHasParts(name, ["большаков", "константин", "александрович"]) ||
   employeeNameHasParts(name, ["большаков", "сергей", "александрович"]);
+const employeeVisibleInMonth = (employee: Employee, month: string) =>
+  employee.active !== false ||
+  (!!employee.dismissedAt && month <= employee.dismissedAt.slice(0, 7));
 function App() {
   const [selectedMonth, setSelectedMonth] = useState(currentMonthValue);
   const selectedMonthDays = monthDaysFor(selectedMonth);
@@ -420,7 +425,7 @@ function App() {
     return employees.filter((employee) => allowedEmployeeIds.has(employee.id));
   })();
   const activeScopedEmployees = scopedEmployees.filter(
-    (employee) => employee.active !== false,
+    (employee) => employeeVisibleInMonth(employee, selectedMonth),
   );
   const latestSkudDate = employees
     .filter((employee) => employee.date)
@@ -3292,7 +3297,14 @@ function SkudImport({
       );
       const rows = (parseSkudWorkbook(await file.arrayBuffer()) as Employee[])
         .filter((row) => !isExcludedEmployeeName(row.name))
-        .filter((row) => rosterById.get(row.id)?.active !== false)
+        .filter((row) => {
+          const roster = rosterById.get(row.id);
+          if (roster?.active !== false) return true;
+          return (
+            !!roster.dismissedAt &&
+            String(row.date || "").slice(0, 7) <= roster.dismissedAt.slice(0, 7)
+          );
+        })
         .map((row) => {
           const roster = rosterById.get(row.id);
           const enriched = roster
@@ -3304,6 +3316,8 @@ function SkudImport({
                 scheduleKind: roster.scheduleKind,
                 schedulePattern: roster.schedulePattern,
                 scheduleEffectiveFrom: roster.scheduleEffectiveFrom,
+                active: roster.active,
+                dismissedAt: roster.dismissedAt,
               }
             : row;
           const fact = payableFactHours(enriched);
@@ -4046,17 +4060,26 @@ function EmployeeDirectory({
     const response = await fetch(`/api/employees/${employee.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ active }),
+      body: JSON.stringify({
+        active,
+        dismissed_at: active ? null : localDateString(),
+      }),
     });
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       setMessage(error.error || `Не удалось ${action} сотрудника`);
       return;
     }
-    const updated = { ...employee, active };
+    const updated = {
+      ...employee,
+      active,
+      dismissedAt: active ? undefined : localDateString(),
+    };
     setEmployees(
       employees.map((row) =>
-        row.id === employee.id ? { ...row, active } : row,
+        row.id === employee.id
+          ? { ...row, active, dismissedAt: updated.dismissedAt }
+          : row,
       ),
     );
     setSelected(updated);
