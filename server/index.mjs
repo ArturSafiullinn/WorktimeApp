@@ -628,11 +628,16 @@ app.put("/api/me/email", async (req, res) => {
 });
 app.get("/api/employees", async (req, res) => {
   try {
-    const active = req.query.active !== "false";
+    const activeFilter =
+      req.query.active === "all"
+        ? null
+        : req.query.active === "false"
+          ? false
+          : true;
     const scope = bossEmployeeFilter(req.account, "e");
     const { rows } = await pool.query(
-      `SELECT e.id,e.full_name name,e.card_number,e.position_name,e.active,e.needs_review,e.review_note,e.department_id,d.name department,s.name schedule,s.id schedule_id,s.code schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,s.paid_hours,s.effective_from schedule_effective_from FROM employees e LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT st.*,es.effective_from FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=CURRENT_DATE AND(es.effective_to IS NULL OR es.effective_to>=CURRENT_DATE)ORDER BY es.effective_from DESC LIMIT 1)s ON true WHERE($1::boolean=false OR e.active=true) AND NOT ${excludedEmployeeNameSql("e")}${scope.sql} ORDER BY d.name,e.full_name`,
-      [active, ...scope.params],
+      `SELECT e.id,e.full_name name,e.card_number,e.position_name,e.active,e.needs_review,e.review_note,e.department_id,d.name department,s.name schedule,s.id schedule_id,s.code schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,s.paid_hours,s.effective_from schedule_effective_from FROM employees e LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT st.*,es.effective_from FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=CURRENT_DATE AND(es.effective_to IS NULL OR es.effective_to>=CURRENT_DATE)ORDER BY es.effective_from DESC LIMIT 1)s ON true WHERE($1::boolean IS NULL OR e.active=$1) AND NOT ${excludedEmployeeNameSql("e")}${scope.sql} ORDER BY d.name,e.full_name`,
+      [activeFilter, ...scope.params],
     );
     res.json(rows);
   } catch (e) {
@@ -700,7 +705,7 @@ app.get("/api/skud-days", async (req, res) => {
       `CREATE TABLE IF NOT EXISTS skud_days(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),work_date DATE NOT NULL,entry_time TIME,end_time TIME,fact_hours NUMERIC(6,2) NOT NULL DEFAULT 0,total_hours NUMERIC(6,2) NOT NULL DEFAULT 0,combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0,status TEXT NOT NULL,record_count INTEGER NOT NULL DEFAULT 0,issues JSONB NOT NULL DEFAULT '[]'::jsonb,source TEXT NOT NULL DEFAULT 'skud_import',imported_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,work_date))`,
     );
     const { rows } = await pool.query(
-      `SELECT sd.employee_id id,e.full_name name,e.department_id,d.name department,s.schedule,s.schedule_id,s.schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,s.paid_hours,to_char(s.effective_from,'YYYY-MM-DD') schedule_effective_from,to_char(sd.work_date,'YYYY-MM-DD') date,COALESCE(to_char(sd.entry_time,'HH24:MI'),'—') entry,COALESCE(to_char(sd.end_time,'HH24:MI'),'—') exit,sd.fact_hours::float fact,sd.total_hours::float total,sd.combo_hours::float combo,sd.status,sd.record_count "recordCount",sd.issues FROM skud_days sd JOIN employees e ON e.id=sd.employee_id LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT es.effective_from,st.id schedule_id,st.name schedule,st.code schedule_code,st.schedule_kind,st.cycle_pattern,st.requires_anchor,st.paid_hours FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=sd.work_date AND(es.effective_to IS NULL OR es.effective_to>=sd.work_date)ORDER BY es.effective_from DESC LIMIT 1) s ON true WHERE sd.work_date>=($1 || '-01')::date AND sd.work_date<(($1 || '-01')::date + interval '1 month') AND NOT ${excludedEmployeeNameSql("e")}${scope.sql} ORDER BY d.name,e.full_name,sd.work_date`,
+      `SELECT sd.employee_id id,e.full_name name,e.active,e.department_id,d.name department,s.schedule,s.schedule_id,s.schedule_code,s.schedule_kind,s.cycle_pattern,s.requires_anchor,s.paid_hours,to_char(s.effective_from,'YYYY-MM-DD') schedule_effective_from,to_char(sd.work_date,'YYYY-MM-DD') date,COALESCE(to_char(sd.entry_time,'HH24:MI'),'—') entry,COALESCE(to_char(sd.end_time,'HH24:MI'),'—') exit,sd.fact_hours::float fact,sd.total_hours::float total,sd.combo_hours::float combo,sd.status,sd.record_count "recordCount",sd.issues FROM skud_days sd JOIN employees e ON e.id=sd.employee_id LEFT JOIN departments d ON d.id=e.department_id LEFT JOIN LATERAL(SELECT es.effective_from,st.id schedule_id,st.name schedule,st.code schedule_code,st.schedule_kind,st.cycle_pattern,st.requires_anchor,st.paid_hours FROM employee_schedules es JOIN schedule_templates st ON st.id=es.schedule_id WHERE es.employee_id=e.id AND es.effective_from<=sd.work_date AND(es.effective_to IS NULL OR es.effective_to>=sd.work_date)ORDER BY es.effective_from DESC LIMIT 1) s ON true WHERE sd.work_date>=($1 || '-01')::date AND sd.work_date<(($1 || '-01')::date + interval '1 month') AND NOT ${excludedEmployeeNameSql("e")}${scope.sql} ORDER BY d.name,e.full_name,sd.work_date`,
       [month, ...scope.params],
     );
     res.json(rows);
@@ -716,9 +721,20 @@ app.post("/api/skud-days/import", requireRole("admin"), async (req, res) => {
       .filter((row) => isExcludedFromTimesheet(row.name))
       .map((row) => Number(row.id))
       .filter(Number.isFinite);
-    const rows = incomingRows.filter(
+    const candidateRows = incomingRows.filter(
       (row) => !isExcludedFromTimesheet(row.name),
     );
+    const candidateIds = [
+      ...new Set(candidateRows.map((row) => Number(row.id)).filter(Number.isFinite)),
+    ];
+    const inactive = candidateIds.length
+      ? await client.query(
+          `SELECT id FROM employees WHERE active=false AND id=ANY($1::int[])`,
+          [candidateIds],
+        )
+      : { rows: [] };
+    const inactiveIds = new Set(inactive.rows.map((row) => Number(row.id)));
+    const rows = candidateRows.filter((row) => !inactiveIds.has(Number(row.id)));
     if (rows.length > 20000)
       return res.status(413).json({ error: "Слишком большой файл импорта" });
     await client.query("BEGIN");

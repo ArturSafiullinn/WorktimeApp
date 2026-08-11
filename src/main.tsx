@@ -61,6 +61,7 @@ type Employee = {
   schedulePattern?: any;
   scheduleEffectiveFrom?: string;
   schedulePaidHours?: number;
+  active?: boolean;
   needsReview?: boolean;
   reviewNote?: string;
 };
@@ -231,6 +232,7 @@ const employeeFromApi = (e: any): Employee => ({
   schedulePattern: e.cycle_pattern,
   scheduleEffectiveFrom: e.schedule_effective_from?.slice(0, 10),
   schedulePaidHours: nullableNumber(e.paid_hours),
+  active: e.active !== false,
   needsReview: e.needs_review,
   reviewNote: e.review_note,
   entry: formatTime(e.entry || "—"),
@@ -417,6 +419,9 @@ function App() {
     ]);
     return employees.filter((employee) => allowedEmployeeIds.has(employee.id));
   })();
+  const activeScopedEmployees = scopedEmployees.filter(
+    (employee) => employee.active !== false,
+  );
   const latestSkudDate = employees
     .filter((employee) => employee.date)
     .reduce(
@@ -427,7 +432,7 @@ function App() {
   const skudReadyThrough = latestSkudDate
     ? addDays(latestSkudDate, -1)
     : undefined;
-  const scopedOpenProblems = scopedEmployees.filter((e) =>
+  const scopedOpenProblems = activeScopedEmployees.filter((e) =>
     isOpenProblem(e, globalOverrides, skudReadyThrough),
   );
   const detailEmployee =
@@ -437,7 +442,7 @@ function App() {
   useEffect(() => {
     if (!role) return;
     Promise.all([
-      fetch("/api/employees").then((r) =>
+      fetch("/api/employees?active=all").then((r) =>
         r.ok ? r.json() : Promise.reject(new Error("API недоступен")),
       ),
       fetch(`/api/skud-days?month=${selectedMonth}`).then((r) => (r.ok ? r.json() : [])),
@@ -641,7 +646,7 @@ function App() {
             <Dashboard
               role={role}
               go={go}
-              employees={scopedEmployees}
+              employees={activeScopedEmployees}
               overrides={globalOverrides}
               accountName={accounts[user]?.name}
               skudReadyThrough={skudReadyThrough}
@@ -651,7 +656,7 @@ function App() {
           )}{" "}
           {page === "timesheet" && (
             <Timesheet
-              employees={scopedEmployees}
+              employees={activeScopedEmployees}
               go={go}
               role={role}
               user={user}
@@ -663,7 +668,7 @@ function App() {
           )}{" "}
           {page === "problems" && (
             <Problems
-              employees={scopedEmployees}
+              employees={activeScopedEmployees}
               overrides={globalOverrides}
               skudReadyThrough={skudReadyThrough}
               go={go}
@@ -672,7 +677,7 @@ function App() {
           {page === "detail" && selected && (
             <Detail
               e={detailEmployee || selected}
-              employees={scopedEmployees}
+              employees={activeScopedEmployees}
               role={role}
               go={go}
               user={user}
@@ -702,7 +707,7 @@ function App() {
           {page === "combo" && selected && (
             <Combination
               e={selected}
-              employees={scopedEmployees}
+              employees={activeScopedEmployees}
               go={go}
               update={(v) =>
                 setEmployees(employees.map((x) => (x.id === v.id ? v : x)))
@@ -711,7 +716,7 @@ function App() {
           )}{" "}
           {page === "approval" && (
             <Approval
-              employees={scopedEmployees}
+              employees={activeScopedEmployees}
               selectedMonth={selectedMonth}
             />
           )}{" "}
@@ -730,7 +735,7 @@ function App() {
               />
             ) : (
               <BossEmployeeCalendar
-                employees={scopedEmployees}
+                employees={activeScopedEmployees}
                 role={role}
                 user={user}
                 selectedMonth={selectedMonth}
@@ -3287,6 +3292,7 @@ function SkudImport({
       );
       const rows = (parseSkudWorkbook(await file.arrayBuffer()) as Employee[])
         .filter((row) => !isExcludedEmployeeName(row.name))
+        .filter((row) => rosterById.get(row.id)?.active !== false)
         .map((row) => {
           const roster = rosterById.get(row.id);
           const enriched = roster
@@ -3973,6 +3979,9 @@ function EmployeeDirectory({
   setEmployees: (e: Employee[]) => void;
 }) {
   const [q, setQ] = useState("");
+  const [employeeStatus, setEmployeeStatus] = useState<"active" | "dismissed">(
+    "active",
+  );
   const [selected, setSelected] = useState<Employee | null>(null);
   const [departments, setDepartments] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -4027,6 +4036,33 @@ function EmployeeDirectory({
     setSelected(updated);
     setMessage("Сохранено в PostgreSQL");
   };
+  const setEmployeeActive = async (employee: Employee, active: boolean) => {
+    const action = active ? "восстановить" : "уволить";
+    if (
+      !active &&
+      !confirm(`Уволить сотрудника "${employee.name}"? Он уйдёт из табеля и проблем.`)
+    )
+      return;
+    const response = await fetch(`/api/employees/${employee.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ active }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      setMessage(error.error || `Не удалось ${action} сотрудника`);
+      return;
+    }
+    const updated = { ...employee, active };
+    setEmployees(
+      employees.map((row) =>
+        row.id === employee.id ? { ...row, active } : row,
+      ),
+    );
+    setSelected(updated);
+    setEmployeeStatus(active ? "active" : "dismissed");
+    setMessage(active ? "Сотрудник восстановлен" : "Сотрудник уволен");
+  };
   const uniqueEmployees = Array.from(
     employees
       .reduce((map, e) => {
@@ -4035,7 +4071,11 @@ function EmployeeDirectory({
       }, new Map<number, Employee>())
       .values(),
   );
-  const list = uniqueEmployees.filter((e) =>
+  const activeEmployees = uniqueEmployees.filter((e) => e.active !== false);
+  const dismissedEmployees = uniqueEmployees.filter((e) => e.active === false);
+  const visibleEmployees =
+    employeeStatus === "active" ? activeEmployees : dismissedEmployees;
+  const list = visibleEmployees.filter((e) =>
     matchesSearch(
       `${e.id} ${e.name} ${e.initials} ${e.department} ${e.schedule}`,
       q,
@@ -4046,10 +4086,32 @@ function EmployeeDirectory({
       <PageHead
         eye="СПРАВОЧНИК"
         title="Сотрудники"
-        text={`${uniqueEmployees.length} активных сотрудников · подразделения и постоянные графики`}
+        text={`${activeEmployees.length} работают · ${dismissedEmployees.length} уволены`}
       />
       <div className="directoryLayout">
         <div>
+          <div className="tabs">
+            <button
+              className={employeeStatus === "active" ? "active" : ""}
+              onClick={() => {
+                setEmployeeStatus("active");
+                setSelected(null);
+                setMessage("");
+              }}
+            >
+              Работают
+            </button>
+            <button
+              className={employeeStatus === "dismissed" ? "active" : ""}
+              onClick={() => {
+                setEmployeeStatus("dismissed");
+                setSelected(null);
+                setMessage("");
+              }}
+            >
+              Уволенные
+            </button>
+          </div>
           <div className="search directorySearch">
             <Search />
             <input
@@ -4062,7 +4124,9 @@ function EmployeeDirectory({
             {list.map((e) => (
               <button
                 key={e.id}
-                className={selected?.id === e.id ? "selected" : ""}
+                className={`${selected?.id === e.id ? "selected" : ""} ${
+                  e.active === false ? "inactive" : ""
+                }`}
                 onClick={() => {
                   setSelected({ ...e });
                   setMessage("");
@@ -4073,6 +4137,7 @@ function EmployeeDirectory({
                   <b>{e.name}</b>
                   <small>
                     {e.department} · {formatScheduleText(e.schedule)}
+                    {e.active === false ? " · Уволен" : ""}
                     {e.needsReview ? " · Требует проверки" : ""}
                   </small>
                 </span>
@@ -4093,6 +4158,15 @@ function EmployeeDirectory({
                   <div>
                     <b>Требует проверки</b>
                     <p>{selected.reviewNote}</p>
+                  </div>
+                </div>
+              )}
+              {selected.active === false && (
+                <div className="notice compact">
+                  <History />
+                  <div>
+                    <b>Сотрудник уволен</b>
+                    <p>Он скрыт из табеля, проблем и обычных списков.</p>
                   </div>
                 </div>
               )}
@@ -4159,6 +4233,21 @@ function EmployeeDirectory({
               <button className="primary" onClick={save}>
                 Сохранить назначение
               </button>
+              {selected.active === false ? (
+                <button
+                  className="outline"
+                  onClick={() => setEmployeeActive(selected, true)}
+                >
+                  Восстановить сотрудника
+                </button>
+              ) : (
+                <button
+                  className="danger"
+                  onClick={() => setEmployeeActive(selected, false)}
+                >
+                  Уволить сотрудника
+                </button>
+              )}
             </div>
           ) : (
             <div className="panel editorPlaceholder">
@@ -5111,6 +5200,7 @@ function Departments({
     ? Array.from(
         employees
           .filter((e) => Number(e.departmentId) === Number(selected.id))
+          .filter((e) => e.active !== false)
           .reduce((map, e) => {
             if (!map.has(e.id) || !e.date) map.set(e.id, e);
             return map;
