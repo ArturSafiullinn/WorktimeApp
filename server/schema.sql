@@ -15,6 +15,7 @@ ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS end_date DATE;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS leave_minutes INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_hours NUMERIC(6,2) NOT NULL DEFAULT 0;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS overtime_hours NUMERIC(6,2) NOT NULL DEFAULT 0;
+ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS no_lunch BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_id INTEGER REFERENCES employees(id);
 ALTER TABLE schedule_overrides ADD COLUMN IF NOT EXISTS combo_employee_name TEXT;
 CREATE TABLE IF NOT EXISTS schedule_override_audit(id BIGSERIAL PRIMARY KEY,override_id BIGINT,action TEXT NOT NULL CHECK(action IN('created','updated','deleted','restored')),employee_id INTEGER,work_date DATE,changed_by TEXT,action_by TEXT NOT NULL,snapshot JSONB NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now());

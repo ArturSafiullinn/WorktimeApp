@@ -122,6 +122,28 @@ const hasNameParts = (name: string, parts: string[]) =>
 const hasBolshakovEarlyLeaveException = (name: string) =>
   hasNameParts(name, ["большаков", "константин", "александрович"]) ||
   hasNameParts(name, ["большаков", "сергей", "александрович"]);
+const hasSalesDepartmentTolerance = (department: string) => {
+  const d = department.toLowerCase().replace(/ё/g, "е");
+  return d.includes("сбыт") || d.includes("продаж");
+};
+const attendanceToleranceFor = (department: string) =>
+  hasSalesDepartmentTolerance(department) ? 15 : SKUD_RULES.lateThresholdMin;
+const hasHusainovOzonException = (name: string) =>
+  normalizedName(name).split(" ").includes("хусаинов");
+const allowedHusainovOzonDeparture = (
+  name: string,
+  department: string,
+  start: number | null,
+  end: number | null,
+  s: Schedule,
+) =>
+  hasHusainovOzonException(name) &&
+  hasSalesDepartmentTolerance(department) &&
+  start != null &&
+  end != null &&
+  !s.overnight &&
+  start <= s.start + attendanceToleranceFor(department) &&
+  end >= s.end - 45;
 const allowedCompensatedEarlyLeave = (
   name: string,
   start: number | null,
@@ -141,6 +163,7 @@ const allowedCompensatedEarlyLeave = (
 };
 function statusFor(
   name: string,
+  department: string,
   start: number | null,
   end: number | null,
   count: number,
@@ -170,20 +193,22 @@ function statusFor(
     return "Требует проверки";
   }
   if (s.overnight) return "ОК";
-  if (start! > s.start + SKUD_RULES.lateThresholdMin) {
+  const tolerance = attendanceToleranceFor(department);
+  if (start! > s.start + tolerance) {
     issues.push(
-      `Вход позже графика более чем на ${SKUD_RULES.lateThresholdMin} минут`,
+      `Вход позже графика более чем на ${tolerance} минут`,
     );
     return "Опоздание";
   }
+  if (allowedHusainovOzonDeparture(name, department, start, end, s)) return "ОК";
   if (hasBolshakovEarlyLeaveException(name) && end! < s.end) {
     if (allowedCompensatedEarlyLeave(name, start, end, s)) return "ОК";
     issues.push("Выход раньше разрешенного компенсируемого времени");
     return "Ранний уход";
   }
-  if (end! < s.end - SKUD_RULES.earlyThresholdMin) {
+  if (end! < s.end - tolerance) {
     issues.push(
-      `Выход раньше графика более чем на ${SKUD_RULES.earlyThresholdMin} минут`,
+      `Выход раньше графика более чем на ${tolerance} минут`,
     );
     return "Ранний уход";
   }
@@ -205,6 +230,7 @@ function calculate(raw: Raw): SkudEmployee {
   if (s.overnight && duration < 0) duration += 1440;
   const status = statusFor(
     raw.name,
+    raw.department,
     raw.first,
     raw.last,
     raw.count,
@@ -220,7 +246,10 @@ function calculate(raw: Raw): SkudEmployee {
     raw.first != null &&
     raw.last != null
   ) {
-    if (allowedCompensatedEarlyLeave(raw.name, raw.first, raw.last, s)) {
+    if (
+      allowedCompensatedEarlyLeave(raw.name, raw.first, raw.last, s) ||
+      allowedHusainovOzonDeparture(raw.name, raw.department, raw.first, raw.last, s)
+    ) {
       fact = Math.max(0, (s.end - s.start - s.lunch) / 60);
     } else if (s.cleanTime || s.overnight || s.lunch <= 0) fact = duration / 60;
     else {

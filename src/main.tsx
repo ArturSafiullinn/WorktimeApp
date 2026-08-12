@@ -216,14 +216,17 @@ const nullableNumber = (value: unknown) => {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
 };
+const initialsFromName = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((x: string) => x[0])
+    .join("");
 const employeeFromApi = (e: any): Employee => ({
   id: e.id,
   name: e.name,
-  initials: e.name
-    .split(/\s+/)
-    .slice(0, 2)
-    .map((x: string) => x[0])
-    .join(""),
+  initials: initialsFromName(e.name),
   department: e.department,
   schedule: formatScheduleText(e.schedule || "График не назначен"),
   departmentId: nullableNumber(e.department_id),
@@ -371,6 +374,12 @@ const employeeNameHasParts = (name: string | undefined, parts: string[]) =>
 const hasBolshakovEarlyLeaveException = (name?: string) =>
   employeeNameHasParts(name, ["большаков", "константин", "александрович"]) ||
   employeeNameHasParts(name, ["большаков", "сергей", "александрович"]);
+const hasSalesDepartmentTolerance = (department?: string) => {
+  const text = normalizedEmployeeName(department);
+  return text.includes("сбыт") || text.includes("продаж");
+};
+const hasHusainovOzonException = (name?: string) =>
+  normalizedEmployeeName(name).split(" ").includes("хусаинов");
 const isLegacyDismissedArchiveEmployee = (employee: Employee) =>
   employee.active === false &&
   !employee.dismissedAt &&
@@ -671,6 +680,19 @@ function App() {
               role={role}
               user={user}
               onOverridesChange={setGlobalOverrides}
+              onEmployeeUpdate={(employee) =>
+                setEmployees(
+                  employees.map((row) =>
+                    row.id === employee.id
+                      ? {
+                          ...row,
+                          name: employee.name,
+                          initials: employee.initials,
+                        }
+                      : row,
+                  ),
+                )
+              }
               skudReadyThrough={skudReadyThrough}
               selectedMonth={selectedMonth}
               monthDays={selectedMonthDays}
@@ -1233,6 +1255,7 @@ type TimesheetCell = {
   comboHours: number;
   overtimeHours: number;
   leaveMinutes: number;
+  noLunch?: boolean;
   status?: Status;
   issueLabel?: string;
   rawEntry?: string;
@@ -1257,6 +1280,7 @@ type WorkOverride = {
   leave_minutes?: number;
   combo_hours?: number;
   overtime_hours?: number;
+  no_lunch?: boolean;
   combo_employee_id?: number;
   combo_employee_name?: string;
   created_at?: string;
@@ -1328,10 +1352,11 @@ const isOpenProblem = (
 ) =>
   isActionableProblem(e, skudReadyThrough) &&
   !hasCompensatedEarlyLeave(e) &&
+  !hasSalesDepartmentAcceptedAttendance(e) &&
   !isNoAttendanceRecord(e) &&
   !isProblemResolvedByOverride(e, overrides);
 const visibleStatus = (e: Employee, skudReadyThrough?: string): Status =>
-  hasCompensatedEarlyLeave(e)
+  hasCompensatedEarlyLeave(e) || hasSalesDepartmentAcceptedAttendance(e)
     ? "ОК"
     : isAwaitingSkudRefresh(e, skudReadyThrough) && e.status !== "ОК"
     ? "Ожидает данных"
@@ -1388,8 +1413,8 @@ const isRegularSchedule = (e: Employee) =>
   e.scheduleCode === "standard" ||
   e.scheduleKind === "weekly" ||
   /08:00.*17:00|09:00.*18:00/.test(formatScheduleText(e.schedule));
-const lunchHoursFor = (e: Employee, rawHours: number) =>
-  isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
+const lunchHoursFor = (e: Employee, rawHours: number, noLunch = false) =>
+  !noLunch && isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
 const plannedPaidHoursFor = (e: Employee) =>
   e.scheduleCode === "foundry_2x2"
     ? null
@@ -1401,14 +1426,42 @@ const payableManualHours = (
   leaveMinutes = 0,
   startDate?: string,
   endDate?: string,
+  noLunch = false,
 ) => {
   const rawHours = durationHoursBetween(start, end, startDate, endDate);
   const workedHours = Math.max(
     0,
-    rawHours - lunchHoursFor(e, rawHours) - leaveMinutes / 60,
+    rawHours - lunchHoursFor(e, rawHours, noLunch) - leaveMinutes / 60,
   );
   const plannedHours = plannedPaidHoursFor(e);
-  return roundHours(plannedHours == null ? workedHours : Math.min(workedHours, plannedHours));
+  const noLunchAllowance = noLunch ? lunchHoursFor(e, rawHours, false) : 0;
+  const cappedHours =
+    plannedHours == null ? workedHours : Math.min(workedHours, plannedHours + noLunchAllowance);
+  return roundHours(cappedHours);
+};
+const plannedBoundsFor = (e: Employee) => {
+  const text = formatScheduleText(e.schedule);
+  const start = /09:00.*18:00/.test(text) ? "09:00" : "08:00";
+  const end = /09:00.*18:00/.test(text) ? "18:00" : "17:00";
+  return { start: timeMinutes(start), end: timeMinutes(end) };
+};
+const hasSalesDepartmentAcceptedAttendance = (e: Employee) => {
+  if (
+    !hasSalesDepartmentTolerance(e.department) ||
+    !isRegularSchedule(e) ||
+    e.entry === "—" ||
+    e.exit === "—"
+  )
+    return false;
+  const { start: plannedStart, end: plannedEnd } = plannedBoundsFor(e);
+  const entry = timeMinutes(e.entry);
+  const exit = timeMinutes(e.exit);
+  if ([plannedStart, plannedEnd, entry, exit].some(Number.isNaN)) return false;
+  const startsWithinTolerance = entry <= plannedStart + 15;
+  const endsWithinTolerance = exit >= plannedEnd - 15;
+  const husainovOzonDay =
+    hasHusainovOzonException(e.name) && exit >= plannedEnd - 45;
+  return startsWithinTolerance && (endsWithinTolerance || husainovOzonDay);
 };
 const hasCompensatedEarlyLeave = (e: Employee) => {
   if (
@@ -1418,12 +1471,7 @@ const hasCompensatedEarlyLeave = (e: Employee) => {
     e.exit === "—"
   )
     return false;
-  const plannedStart = timeMinutes(
-    /09:00.*18:00/.test(formatScheduleText(e.schedule)) ? "09:00" : "08:00",
-  );
-  const plannedEnd = timeMinutes(
-    /09:00.*18:00/.test(formatScheduleText(e.schedule)) ? "18:00" : "17:00",
-  );
+  const { start: plannedStart, end: plannedEnd } = plannedBoundsFor(e);
   const entry = timeMinutes(e.entry);
   const exit = timeMinutes(e.exit);
   if ([plannedStart, plannedEnd, entry, exit].some(Number.isNaN)) return false;
@@ -1438,6 +1486,8 @@ const payableFactHours = (e: Employee) => {
   if (!isRegularSchedule(e) || e.entry === "—" || e.exit === "—")
     return plannedHours == null ? fact : Math.min(fact, plannedHours);
   if (hasCompensatedEarlyLeave(e)) return plannedPaidHoursFor(e) || fact;
+  if (hasHusainovOzonException(e.name) && hasSalesDepartmentAcceptedAttendance(e))
+    return plannedPaidHoursFor(e) || fact;
   return Math.min(fact, payableManualHours(e, e.entry, e.exit));
 };
 const suggestedOvertimeHours = (
@@ -1447,20 +1497,22 @@ const suggestedOvertimeHours = (
   leaveMinutes = 0,
   startDate?: string,
   endDate?: string,
+  noLunch = false,
 ) => {
   const rawHours = durationHoursBetween(start, end, startDate, endDate);
   const workedHours = Math.max(
     0,
-    rawHours - lunchHoursFor(e, rawHours) - leaveMinutes / 60,
+    rawHours - lunchHoursFor(e, rawHours, noLunch) - leaveMinutes / 60,
   );
   const plannedHours = plannedPaidHoursFor(e);
+  if (isRegularSchedule(e)) return 0;
   if (plannedHours == null) return 0;
   return Math.max(
     0,
     roundHours(workedHours - plannedHours),
   );
 };
-const blankCellHours = { hours: 0, baseHours: 0, comboHours: 0, overtimeHours: 0, leaveMinutes: 0 };
+const blankCellHours = { hours: 0, baseHours: 0, comboHours: 0, overtimeHours: 0, leaveMinutes: 0, noLunch: false };
 const compactHours = (hours: number) => hours.toLocaleString("ru-RU", { maximumFractionDigits: 1 });
 const manualTimeReasons = new Set([
   "forgot_pass",
@@ -1635,6 +1687,7 @@ function cellFor(
       (sum, row) => sum + Math.max(0, Number(row.leave_minutes) || 0),
       0,
     );
+    const noLunch = sortedOverrides.some((row) => !!row.no_lunch);
     const overrideComboHours = sortedOverrides.reduce(
       (sum, row) => sum + Math.max(0, Number(row.combo_hours) || 0),
       0,
@@ -1649,9 +1702,10 @@ function cellFor(
     const manualBaseHours = absenceActive
       ? 0
       : sortedOverrides.length
-      ? payableManualHours(e, start, end, leaveMinutes, startDate, endDate)
+      ? payableManualHours(e, start, end, leaveMinutes, startDate, endDate, noLunch)
       : baseHours;
-    const hours = roundHours(manualBaseHours + overtimeHours + comboHours);
+    const mainHours = roundHours(manualBaseHours + overtimeHours);
+    const hours = roundHours(mainHours + comboHours);
     const relatedNames = Array.from(
       new Set(
         sortedOverrides
@@ -1665,8 +1719,8 @@ function cellFor(
         : absenceOverride?.reason === "sick_leave"
         ? "Б"
         : "ОТ"
-      : comboHours || overtimeHours
-        ? `${compactHours(manualBaseHours)}+${compactHours(overtimeHours + comboHours)}`
+      : comboHours
+        ? `${compactHours(mainHours)}+${compactHours(comboHours)}`
         : hours
           ? `${compactHours(hours)}ч`
           : "0";
@@ -1700,10 +1754,11 @@ function cellFor(
       startDate,
       endDate,
       hours,
-      baseHours: manualBaseHours,
+      baseHours: mainHours,
       comboHours,
       overtimeHours,
       leaveMinutes,
+      noLunch,
       status: sortedOverrides.length
         ? absenceActive && absenceOverride?.reason === "day_off"
           ? "Выходной"
@@ -1724,6 +1779,7 @@ function Timesheet({
   role,
   user,
   onOverridesChange,
+  onEmployeeUpdate,
   skudReadyThrough,
   selectedMonth,
   monthDays,
@@ -1733,6 +1789,7 @@ function Timesheet({
   role: Role;
   user: string;
   onOverridesChange?: (rows: WorkOverride[]) => void;
+  onEmployeeUpdate?: (employee: Employee) => void;
   skudReadyThrough?: string;
   selectedMonth: string;
   monthDays: MonthDay[];
@@ -1990,6 +2047,7 @@ function Timesheet({
           role={role}
           user={user}
           roster={roster}
+          onEmployeeUpdate={onEmployeeUpdate}
           onClose={() => setOpened(null)}
           onOpenDetail={() => {
             setOpened(null);
@@ -2055,6 +2113,7 @@ function TimesheetCellModal({
   role,
   user,
   roster,
+  onEmployeeUpdate,
   onClose,
   onOpenDetail,
   onSave,
@@ -2064,6 +2123,7 @@ function TimesheetCellModal({
   role: Role;
   user: string;
   roster: Employee[];
+  onEmployeeUpdate?: (employee: Employee) => void;
   onClose: () => void;
   onOpenDetail: () => void;
   onSave: (row: WorkOverride) => void;
@@ -2107,6 +2167,7 @@ function TimesheetCellModal({
     leaveMinutes: "0",
     comboHours: "0",
     overtimeHours: "0",
+    noLunch: false,
     comboEmployeeId: "",
     comboEmployeeName: "",
     comment: "",
@@ -2117,8 +2178,23 @@ function TimesheetCellModal({
   );
   const [saveError, setSaveError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [comboSearch, setComboSearch] = useState("");
+  const [employeeNameDraft, setEmployeeNameDraft] = useState(opened.employee.name);
+  const [employeeNameMessage, setEmployeeNameMessage] = useState("");
+  const [employeeNameSaving, setEmployeeNameSaving] = useState(false);
+  useEffect(() => {
+    setEmployeeNameDraft(opened.employee.name);
+    setEmployeeNameMessage("");
+  }, [opened.employee.id, opened.employee.name]);
   const comboEmployee = roster.find((e) => String(e.id) === edit.comboEmployeeId);
   const comboEmployeeName = comboEmployee?.name || edit.comboEmployeeName.trim();
+  const comboOptions = roster
+    .filter((e) => e.id !== opened.employee.id)
+    .sort((a, b) => a.name.localeCompare(b.name, "ru"))
+    .filter((e) =>
+      matchesSearch(`${e.name} ${e.initials} ${e.department}`, comboSearch),
+    )
+    .slice(0, 80);
   const leaveMinutes = Math.max(0, Number(edit.leaveMinutes) || 0);
   const comboHours = Math.max(0, Number(edit.comboHours) || 0);
   const overtimeHours = Math.max(0, Number(edit.overtimeHours) || 0);
@@ -2129,6 +2205,7 @@ function TimesheetCellModal({
     leaveMinutes,
     edit.startDate,
     edit.endDate,
+    edit.noLunch,
   );
   const baseHours = payableManualHours(
     opened.employee,
@@ -2137,13 +2214,13 @@ function TimesheetCellModal({
     leaveMinutes,
     edit.startDate,
     edit.endDate,
+    edit.noLunch,
   );
   const isAbsenceReason = zeroWorkdayReasons.has(edit.reason);
-  const previewBaseHours = isAbsenceReason ? 0 : baseHours;
-  const previewOvertimeHours = isAbsenceReason ? 0 : overtimeHours;
+  const previewBaseHours = isAbsenceReason ? 0 : roundHours(baseHours + overtimeHours);
   const previewComboHours = isAbsenceReason ? 0 : comboHours;
   const totalHours = roundHours(
-    previewBaseHours + previewOvertimeHours + previewComboHours,
+    previewBaseHours + previewComboHours,
   );
   const needsRelatedEmployee =
     !isAbsenceReason && (comboHours > 0 || edit.reason === "substitution");
@@ -2175,6 +2252,7 @@ function TimesheetCellModal({
       leave_minutes: isAbsenceReason ? 0 : leaveMinutes,
       combo_hours: isAbsenceReason ? 0 : comboHours,
       overtime_hours: isAbsenceReason ? 0 : overtimeHours,
+      no_lunch: isAbsenceReason ? false : edit.noLunch,
       combo_employee_id: isAbsenceReason
         ? null
         : comboEmployee
@@ -2237,10 +2315,44 @@ function TimesheetCellModal({
         row.combo_hours || (row.reason === "substitution" ? 2 : 0),
       ),
       overtimeHours: String(row.overtime_hours || 0),
+      noLunch: !!row.no_lunch,
       comboEmployeeId: String(row.combo_employee_id || ""),
       comboEmployeeName: row.combo_employee_name || "",
       comment: row.comment || "",
     });
+    setComboSearch(row.combo_employee_name || "");
+  };
+  const saveEmployeeName = async () => {
+    const name = employeeNameDraft.trim();
+    setEmployeeNameMessage("");
+    if (!name) {
+      setEmployeeNameMessage("Укажите ФИО сотрудника");
+      return;
+    }
+    setEmployeeNameSaving(true);
+    try {
+      const response = await fetch(`/api/employees/${opened.employee.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full_name: name }),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        setEmployeeNameMessage(error.error || "Не удалось сохранить ФИО");
+        return;
+      }
+      const updated = {
+        ...opened.employee,
+        name,
+        initials: initialsFromName(name),
+      };
+      onEmployeeUpdate?.(updated);
+      setEmployeeNameMessage("ФИО сохранено");
+    } catch {
+      setEmployeeNameMessage("Не удалось сохранить: сервер API недоступен");
+    } finally {
+      setEmployeeNameSaving(false);
+    }
   };
   return (
     <div className="cellModalShade" onClick={onClose}>
@@ -2249,10 +2361,38 @@ function TimesheetCellModal({
           <X />
         </button>
         <span className="eyebrow">ЯЧЕЙКА ТАБЕЛЯ</span>
-        <h2>{opened.employee.name}</h2>
+        <h2>{employeeNameDraft.trim() || opened.employee.name}</h2>
         <p>
           {formatDate(opened.cell.date)} · {opened.employee.department}
         </p>
+        {role === "admin" && (
+          <div className="inlineEditor">
+            <label>
+              ФИО сотрудника
+              <input
+                type="text"
+                value={employeeNameDraft}
+                onChange={(event) => setEmployeeNameDraft(event.target.value)}
+              />
+            </label>
+            <button
+              className="outline"
+              onClick={saveEmployeeName}
+              disabled={employeeNameSaving}
+            >
+              {employeeNameSaving ? "Сохраняю..." : "Сохранить ФИО"}
+            </button>
+            {employeeNameMessage && (
+              <div
+                className={
+                  employeeNameMessage === "ФИО сохранено" ? "success" : "error"
+                }
+              >
+                {employeeNameMessage}
+              </div>
+            )}
+          </div>
+        )}
         <div className="cellFacts">
           <div>
             <span>График</span>
@@ -2292,9 +2432,15 @@ function TimesheetCellModal({
               <b>{opened.cell.leaveMinutes} мин</b>
             </div>
           )}
+          {opened.cell.noLunch && (
+            <div>
+              <span>Обед</span>
+              <b>Не вычитался</b>
+            </div>
+          )}
           {opened.cell.overtimeHours > 0 && (
             <div>
-              <span>Переработка</span>
+              <span>Переработка в основном времени</span>
               <b>+ {fmt(opened.cell.overtimeHours)}</b>
             </div>
           )}
@@ -2361,6 +2507,7 @@ function TimesheetCellModal({
                       {Number(row.overtime_hours) > 0
                         ? ` · переработка ${fmt(Number(row.overtime_hours))}`
                         : ""}
+                      {row.no_lunch ? " · без обеда" : ""}
                       {row.combo_employee_name
                         ? ` · ${row.combo_employee_name}`
                         : ""}
@@ -2541,27 +2688,49 @@ function TimesheetCellModal({
               )}
             </div>
             )}
+            {!isAbsenceReason && (
+              <label className="checkLine">
+                <input
+                  type="checkbox"
+                  checked={edit.noLunch}
+                  onChange={(event) =>
+                    setEdit({ ...edit, noLunch: event.target.checked })
+                  }
+                />
+                Работали без обеда
+              </label>
+            )}
             {needsRelatedEmployee && (
               <label>
                 {edit.reason === "substitution"
                   ? "За какого сотрудника вышел"
                   : "Кого совмещал"}
+                <input
+                  type="text"
+                  value={comboSearch}
+                  onChange={(event) => setComboSearch(event.target.value)}
+                  placeholder="Поиск по ФИО"
+                />
                 <select
                   value={edit.comboEmployeeId}
                   onChange={(event) =>
-                    setEdit({
-                      ...edit,
-                      comboEmployeeId: event.target.value,
-                      comboEmployeeName: event.target.value
-                        ? ""
-                        : edit.comboEmployeeName,
-                    })
+                    {
+                      const selectedEmployee = roster.find(
+                        (e) => String(e.id) === event.target.value,
+                      );
+                      setComboSearch(selectedEmployee?.name || comboSearch);
+                      setEdit({
+                        ...edit,
+                        comboEmployeeId: event.target.value,
+                        comboEmployeeName: event.target.value
+                          ? ""
+                          : edit.comboEmployeeName,
+                      });
+                    }
                   }
                 >
                   <option value="">Выберите сотрудника</option>
-                  {roster
-                    .filter((e) => e.id !== opened.employee.id)
-                    .map((e) => (
+                  {comboOptions.map((e) => (
                       <option key={e.id} value={e.id}>
                         {e.name}
                       </option>
@@ -2593,8 +2762,7 @@ function TimesheetCellModal({
             </label>
             <div className="calcPreview">
               <span>Основное {fmt(previewBaseHours)}</span>
-              <b>+</b>
-              <span>Переработка {fmt(previewOvertimeHours)}</span>
+              {overtimeHours > 0 && <span>включая переработку {fmt(overtimeHours)}</span>}
               <b>+</b>
               <span>Совмещение {fmt(previewComboHours)}</span>
               <b>=</b>
@@ -3376,7 +3544,8 @@ function SkudImport({
               Минимальный интервал — {SKUD_RULES.minValidIntervalMin} минут
             </li>
             <li>
-              Опоздание и ранний уход — от {SKUD_RULES.lateThresholdMin} минут
+              Опоздание и ранний уход — от {SKUD_RULES.lateThresholdMin} минут,
+              для сбыта/продаж — от 15 минут
             </li>
             <li>Индивидуальные графики сотрудников</li>
             <li>Суточные смены 07:00/08:00 → следующий день</li>
@@ -4021,6 +4190,7 @@ function EmployeeDirectory({
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        full_name: selected.name,
         department_id: selected.departmentId,
         schedule_id: selected.scheduleId || null,
         effective_from: from,
@@ -4040,6 +4210,7 @@ function EmployeeDirectory({
     );
     const updated = {
       ...selected,
+      initials: initialsFromName(selected.name),
       department: department?.name || selected.department,
       schedule: schedule ? schedule.name : selected.schedule,
       needsReview: false,
@@ -4182,6 +4353,20 @@ function EmployeeDirectory({
             <div className="panel editor stickyEditor">
               <span className="eyebrow">СОТРУДНИК #{selected.id}</span>
               <h2>{selected.name}</h2>
+              <label>
+                ФИО
+                <input
+                  type="text"
+                  value={selected.name}
+                  onChange={(e) =>
+                    setSelected({
+                      ...selected,
+                      name: e.target.value,
+                      initials: initialsFromName(e.target.value),
+                    })
+                  }
+                />
+              </label>
               {selected.needsReview && (
                 <div className="notice compact">
                   <AlertTriangle />
@@ -4699,6 +4884,7 @@ const auditOverrideText = (row?: WorkOverride) => {
     parts.push(`переработка ${fmt(Number(row.overtime_hours))}`);
   if (Number(row.combo_hours) > 0)
     parts.push(`совмещение ${fmt(Number(row.combo_hours))}`);
+  if (row.no_lunch) parts.push("без обеда");
   if (row.combo_employee_name) parts.push(row.combo_employee_name);
   if (row.comment) parts.push(row.comment);
   return parts.filter(Boolean).join(" · ");
@@ -5486,8 +5672,23 @@ const personalExceptions = [
     effect:
       "Если условие выполнено, день считается как 8 часов и не попадает в проблемы.",
   },
+  {
+    names: ["Хусаинов"],
+    condition: "Доставка на Озон",
+    rule:
+      "Для отдела сбыта/продаж выход в 16:30 засчитывается как полный день; действует еще 15 минут допуска.",
+    effect:
+      "Если вход в пределах допуска и выход не раньше 16:15, день считается как 8 часов и не попадает в проблемы.",
+  },
 ];
 const generalExceptions = [
+  {
+    condition: "Сбыт и продажи",
+    rule:
+      "Для подразделений, где в названии есть «сбыт» или «продаж», действует допуск 15 минут на вход и выход.",
+    effect:
+      "Опоздание или ранний уход в пределах 15 минут не попадает в проблемы.",
+  },
   {
     condition: "Нет явки по СКУД",
     rule:
