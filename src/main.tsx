@@ -380,6 +380,9 @@ const hasSalesDepartmentTolerance = (department?: string) => {
 };
 const hasHusainovOzonException = (name?: string) =>
   normalizedEmployeeName(name).split(" ").includes("хусаинов");
+const hasMetalworkingNoLunchException = (employee: Pick<Employee, "name" | "department">) =>
+  normalizedEmployeeName(employee.name).split(" ").includes("шувалов") &&
+  normalizedEmployeeName(employee.department).includes("металлообработ");
 const isLegacyDismissedArchiveEmployee = (employee: Employee) =>
   employee.active === false &&
   !employee.dismissedAt &&
@@ -1414,7 +1417,7 @@ const isRegularSchedule = (e: Employee) =>
   e.scheduleKind === "weekly" ||
   /08:00.*17:00|09:00.*18:00/.test(formatScheduleText(e.schedule));
 const lunchHoursFor = (e: Employee, rawHours: number, noLunch = false) =>
-  !noLunch && isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
+  !noLunch && !hasMetalworkingNoLunchException(e) && isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
 const plannedPaidHoursFor = (e: Employee) =>
   e.scheduleCode === "foundry_2x2"
     ? null
@@ -1488,6 +1491,8 @@ const payableFactHours = (e: Employee) => {
   if (hasCompensatedEarlyLeave(e)) return plannedPaidHoursFor(e) || fact;
   if (hasHusainovOzonException(e.name) && hasSalesDepartmentAcceptedAttendance(e))
     return plannedPaidHoursFor(e) || fact;
+  if (hasMetalworkingNoLunchException(e))
+    return payableManualHours(e, e.entry, e.exit, 0, undefined, undefined, true);
   return Math.min(fact, payableManualHours(e, e.entry, e.exit));
 };
 const suggestedOvertimeHours = (
@@ -1687,7 +1692,9 @@ function cellFor(
       (sum, row) => sum + Math.max(0, Number(row.leave_minutes) || 0),
       0,
     );
-    const noLunch = sortedOverrides.some((row) => !!row.no_lunch);
+    const noLunch =
+      hasMetalworkingNoLunchException(e) ||
+      sortedOverrides.some((row) => !!row.no_lunch);
     const overrideComboHours = sortedOverrides.reduce(
       (sum, row) => sum + Math.max(0, Number(row.combo_hours) || 0),
       0,
@@ -2167,7 +2174,7 @@ function TimesheetCellModal({
     leaveMinutes: "0",
     comboHours: "0",
     overtimeHours: "0",
-    noLunch: false,
+    noLunch: hasMetalworkingNoLunchException(opened.employee),
     comboEmployeeId: "",
     comboEmployeeName: "",
     comment: "",
@@ -2252,7 +2259,8 @@ function TimesheetCellModal({
       leave_minutes: isAbsenceReason ? 0 : leaveMinutes,
       combo_hours: isAbsenceReason ? 0 : comboHours,
       overtime_hours: isAbsenceReason ? 0 : overtimeHours,
-      no_lunch: isAbsenceReason ? false : edit.noLunch,
+      no_lunch:
+        isAbsenceReason ? false : edit.noLunch || hasMetalworkingNoLunchException(opened.employee),
       combo_employee_id: isAbsenceReason
         ? null
         : comboEmployee
@@ -2315,7 +2323,7 @@ function TimesheetCellModal({
         row.combo_hours || (row.reason === "substitution" ? 2 : 0),
       ),
       overtimeHours: String(row.overtime_hours || 0),
-      noLunch: !!row.no_lunch,
+      noLunch: !!row.no_lunch || hasMetalworkingNoLunchException(opened.employee),
       comboEmployeeId: String(row.combo_employee_id || ""),
       comboEmployeeName: row.combo_employee_name || "",
       comment: row.comment || "",
@@ -5679,6 +5687,14 @@ const personalExceptions = [
       "Для отдела сбыта/продаж выход в 16:30 засчитывается как полный день; действует еще 15 минут допуска.",
     effect:
       "Если вход в пределах допуска и выход не раньше 16:15, день считается как 8 часов и не попадает в проблемы.",
+  },
+  {
+    names: ["Шувалов"],
+    condition: "Металлообработка без обеда",
+    rule:
+      "Для сотрудника Шувалова в подразделении металлообработки обед не вычитается.",
+    effect:
+      "Отработанное время считается как непрерывный интервал вход–выход.",
   },
 ];
 const generalExceptions = [

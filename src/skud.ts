@@ -126,6 +126,10 @@ const hasSalesDepartmentTolerance = (department: string) => {
   const d = department.toLowerCase().replace(/ё/g, "е");
   return d.includes("сбыт") || d.includes("продаж");
 };
+const hasMetalworkingNoLunchException = (name: string, department: string) => {
+  const d = department.toLowerCase().replace(/ё/g, "е");
+  return normalizedName(name).split(" ").includes("шувалов") && d.includes("металлообработ");
+};
 const attendanceToleranceFor = (department: string) =>
   hasSalesDepartmentTolerance(department) ? 15 : SKUD_RULES.lateThresholdMin;
 const hasHusainovOzonException = (name: string) =>
@@ -220,8 +224,11 @@ function statusFor(
 }
 function calculate(raw: Raw): SkudEmployee {
   const baseSchedule = scheduleFor(raw.id, raw.department, raw.date);
+  const noLunch = hasMetalworkingNoLunchException(raw.name, raw.department);
   const s = {
       ...baseSchedule,
+      lunch: noLunch ? 0 : baseSchedule.lunch,
+      minLunch: noLunch ? 0 : baseSchedule.minLunch,
       overnight: baseSchedule.overnight || raw.overnightShift,
     },
     issues: string[] = [];
