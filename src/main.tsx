@@ -444,6 +444,9 @@ function App() {
   const activeScopedEmployees = scopedEmployees.filter(
     (employee) => employeeVisibleInMonth(employee, selectedMonth),
   );
+  const staffScopedEmployees = scopedEmployees.filter(
+    (employee) => !isLegacyDismissedArchiveEmployee(employee),
+  );
   const latestSkudDate = employees
     .filter((employee) => employee.date)
     .reduce(
@@ -770,7 +773,7 @@ function App() {
               />
             ) : (
               <BossEmployeeCalendar
-                employees={activeScopedEmployees}
+                employees={staffScopedEmployees}
                 role={role}
                 user={user}
                 selectedMonth={selectedMonth}
@@ -3901,7 +3904,10 @@ function BossEmployeeCalendar({
               <span className="avatar sm">{e.initials}</span>
               <span>
                 <b>{e.name}</b>
-                <small>{e.department}</small>
+                <small>
+                  {e.department}
+                  {e.active === false ? " · Уволен" : ""}
+                </small>
               </span>
             </button>
           ))}
