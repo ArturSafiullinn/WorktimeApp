@@ -36,6 +36,7 @@ type Status =
   | "Выход в течение дня"
   | "Изменен график"
   | "Выходной"
+  | "Часы не учитываются"
   | "Ручная корректировка"
   | "Требует проверки"
   | "Ожидает данных";
@@ -264,6 +265,7 @@ const correctionReasons = {
   temporary_leave: "Отлучался в течение дня",
   schedule_change: "Другая смена",
   day_off: "Выходной день",
+  exclude_hours: "Не учитывать часы",
   substitution: "Выходил за другого сотрудника",
   overtime_adjustment: "Ручная переработка",
   sick_leave: "Больничный",
@@ -271,7 +273,15 @@ const correctionReasons = {
   other: "Другое",
 };
 type CorrectionReason = keyof typeof correctionReasons;
-const zeroWorkdayReasons = new Set(["day_off", "sick_leave", "vacation"]);
+const zeroWorkdayReasons = new Set(["day_off", "exclude_hours", "sick_leave", "vacation"]);
+const zeroWorkdayLabelFor = (reason?: string) =>
+  reason === "day_off"
+    ? "В"
+    : reason === "sick_leave"
+      ? "Б"
+      : reason === "vacation"
+        ? "ОТ"
+        : "0";
 const fmt = (n: number) =>
   n.toLocaleString("ru-RU", { maximumFractionDigits: 1 }) + " ч";
 const formatDate = (date?: string) => {
@@ -388,9 +398,10 @@ const isLegacyDismissedArchiveEmployee = (employee: Employee) =>
   !employee.dismissedAt &&
   normalizedEmployeeName(employee.department) === "уволенные";
 const employeeVisibleInMonth = (employee: Employee, month: string) =>
-  !isLegacyDismissedArchiveEmployee(employee) &&
+  employee.date?.slice(0, 7) === month ||
+  (!isLegacyDismissedArchiveEmployee(employee) &&
   (employee.active !== false ||
-    (!!employee.dismissedAt && month <= employee.dismissedAt.slice(0, 7)));
+    (!!employee.dismissedAt && month <= employee.dismissedAt.slice(0, 7))));
 function App() {
   const [selectedMonth, setSelectedMonth] = useState(currentMonthValue);
   const selectedMonthDays = monthDaysFor(selectedMonth);
@@ -444,9 +455,7 @@ function App() {
   const activeScopedEmployees = scopedEmployees.filter(
     (employee) => employeeVisibleInMonth(employee, selectedMonth),
   );
-  const staffScopedEmployees = scopedEmployees.filter(
-    (employee) => !isLegacyDismissedArchiveEmployee(employee),
-  );
+  const staffScopedEmployees = scopedEmployees;
   const latestSkudDate = employees
     .filter((employee) => employee.date)
     .reduce(
@@ -1658,9 +1667,7 @@ function cellFor(
     .find((row) => manualTimeReasons.has(row.reason));
   const absenceOverride = [...sortedOverrides]
     .reverse()
-    .find((row) =>
-      ["day_off", "sick_leave", "vacation"].includes(row.reason),
-    );
+    .find((row) => zeroWorkdayReasons.has(row.reason));
   const absenceActive =
     !!absenceOverride &&
     (!timeOverride || Number(timeOverride.id || 0) < Number(absenceOverride.id || 0));
@@ -1724,11 +1731,7 @@ function cellFor(
       ),
     );
     const factLabel = absenceActive
-      ? absenceOverride?.reason === "day_off"
-        ? "В"
-        : absenceOverride?.reason === "sick_leave"
-        ? "Б"
-        : "ОТ"
+      ? zeroWorkdayLabelFor(absenceOverride?.reason)
       : comboHours
         ? `${compactHours(mainHours)}+${compactHours(comboHours)}`
         : hours
@@ -1755,7 +1758,9 @@ function cellFor(
           ? "vacation"
           : absenceOverride?.reason === "day_off"
             ? "off"
-          : "review"
+            : absenceOverride?.reason === "exclude_hours"
+              ? "off"
+              : "review"
         : bad && !sortedOverrides.length
           ? "review"
           : "fact",
@@ -1772,6 +1777,8 @@ function cellFor(
       status: sortedOverrides.length
         ? absenceActive && absenceOverride?.reason === "day_off"
           ? "Выходной"
+          : absenceActive && absenceOverride?.reason === "exclude_hours"
+            ? "Часы не учитываются"
           : "Ручная корректировка"
         : fact
           ? visibleStatus(fact, skudReadyThrough)
@@ -2922,6 +2929,8 @@ function Detail({
     const status =
       correction.reason === "day_off"
         ? "Выходной"
+        : correction.reason === "exclude_hours"
+          ? "Часы не учитываются"
         : correction.reason === "schedule_change"
           ? "Изменен график"
           : "Ручная корректировка";
