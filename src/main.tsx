@@ -1404,6 +1404,26 @@ const timeMinutes = (time: string) => {
   const [h, m] = time.split(":").map(Number);
   return h * 60 + m;
 };
+const looksLikeSameRowEveningToNight = (start: string, end: string) => {
+  const first = timeMinutes(start);
+  const last = timeMinutes(end);
+  if ([first, last].some(Number.isNaN)) return false;
+  const nightDuration = 24 * 60 - last + first;
+  return first <= 6 * 60 && last >= 15 * 60 && nightDuration >= 4 * 60 && nightDuration <= 18 * 60;
+};
+const formatCorrectedDateTimeRange = (
+  start?: string,
+  end?: string,
+  startDate?: string,
+  endDate?: string,
+) =>
+  start &&
+  end &&
+  startDate &&
+  (!endDate || startDate === endDate) &&
+  looksLikeSameRowEveningToNight(start, end)
+    ? formatDateTimeRange(end, start, startDate, addDays(startDate, 1))
+    : formatDateTimeRange(start, end, startDate, endDate);
 const durationHours = (start: string, end: string) => {
   let diff = timeMinutes(end) - timeMinutes(start);
   if (Number.isNaN(diff)) return 0;
@@ -1688,16 +1708,20 @@ function cellFor(
       bad
     )
       return planned;
-    const start = absenceActive
+    let start = absenceActive
       ? "00:00"
       : timeOverride?.start_time ||
       (fact?.entry && fact.entry !== "—" ? fact.entry : planned.start || "08:00");
-    const end = absenceActive
+    let end = absenceActive
       ? "00:00"
       : timeOverride?.end_time ||
       (fact?.exit && fact.exit !== "—" ? fact.exit : planned.end || "17:00");
     const startDate = timeOverride?.start_date || d.date;
-    const endDate = timeOverride?.end_date || d.date;
+    let endDate = timeOverride?.end_date || d.date;
+    if (!absenceActive && startDate === endDate && looksLikeSameRowEveningToNight(start, end)) {
+      [start, end] = [end, start];
+      endDate = addDays(startDate, 1);
+    }
     const leaveMinutes = sortedOverrides.reduce(
       (sum, row) => sum + Math.max(0, Number(row.leave_minutes) || 0),
       0,
@@ -1739,10 +1763,10 @@ function cellFor(
           : "0";
     const issueMark = bad && !sortedOverrides.length ? "!" : undefined;
     const planLabel = planned.planned ? planned.planLabel || planned.label : undefined;
-    const rawEntry = fact?.entry && fact.entry !== "—" ? fact.entry : undefined;
+    const rawEntry = fact?.entry && fact.entry !== "—" ? start : undefined;
     const rawExit =
       fact?.exit && fact.exit !== "—" && fact.exit !== fact.entry
-        ? fact.exit
+        ? end
         : undefined;
     return {
       ...base,
@@ -2510,7 +2534,7 @@ function TimesheetCellModal({
                     <small>
                       {zeroWorkdayReasons.has(row.reason)
                         ? "Без рабочих часов"
-                        : formatDateTimeRange(
+                        : formatCorrectedDateTimeRange(
                             row.start_time,
                             row.end_time,
                             row.start_date || row.work_date,
@@ -4895,7 +4919,7 @@ const auditOverrideText = (row?: WorkOverride) => {
     formatDate(row.work_date),
     zeroWorkdayReasons.has(row.reason)
       ? "без рабочих часов"
-      : formatDateTimeRange(
+      : formatCorrectedDateTimeRange(
           row.start_time,
           row.end_time,
           row.start_date || row.work_date,

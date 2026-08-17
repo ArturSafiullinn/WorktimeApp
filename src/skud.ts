@@ -107,6 +107,8 @@ const hm = (m: number | null) =>
   m == null
     ? "—"
     : `${String(Math.floor((m % 1440) / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+const looksLikeSameRowEveningToNight = (first: number | null, last: number | null) =>
+  first != null && last != null && first <= 6 * 60 && last >= 15 * 60;
 const initials = (name: string) =>
   name
     .split(/\s+/)
@@ -334,26 +336,37 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
     const count =
       col("Записано раз") >= 0 ? Number(row[col("Записано раз")]) || 1 : 1;
     const old = map.get(key);
+    const raw = old
+      ? {
+          ...old,
+          first:
+            old.first == null
+              ? first
+              : first == null
+                ? old.first
+                : Math.min(old.first, first),
+          last:
+            old.last == null
+              ? last
+              : last == null
+                ? old.last
+                : Math.max(old.last, last),
+          count: old.count + count,
+        }
+      : { id, name, department, date, first, last, count };
     map.set(
       key,
-      old
+      looksLikeSameRowEveningToNight(raw.first, raw.last) &&
+        1440 - raw.last! + raw.first! >= 4 * 60 &&
+        1440 - raw.last! + raw.first! <= 18 * 60
         ? {
-            ...old,
-            first:
-              old.first == null
-                ? first
-                : first == null
-                  ? old.first
-                  : Math.min(old.first, first),
-            last:
-              old.last == null
-                ? last
-                : last == null
-                  ? old.last
-                  : Math.max(old.last, last),
-            count: old.count + count,
+            ...raw,
+            first: raw.last,
+            last: raw.first! + 1440,
+            count: Math.max(2, raw.count),
+            overnightShift: true,
           }
-        : { id, name, department, date, first, last, count },
+        : raw,
     );
   }
   if (!map.size)
