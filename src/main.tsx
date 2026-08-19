@@ -23,6 +23,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { parseSkudWorkbook, SKUD_RULES } from "./skud";
 import "./styles.css";
 
@@ -1938,6 +1939,91 @@ function Timesheet({
     gridTemplateColumns: `minmax(250px,1.45fr) repeat(${monthDays.length},minmax(66px,72px)) minmax(80px,.45fr)`,
     minWidth: `${330 + monthDays.length * 72}px`,
   };
+  const exportTimesheet = () => {
+    const header = [
+      "Подразделение",
+      "Сотрудник",
+      "График",
+      ...monthDays.map((d) => `${d.day} ${d.weekday}`),
+      "Итого",
+    ];
+    const labelRows = groups.flatMap((group) =>
+      group.rows.map((employee) => {
+        const cells = monthDays.map((day) =>
+          cellFor(
+            employee,
+            day,
+            factFor(employee, day.date),
+            overrideFor(employee, day.date),
+            planAnchorFor(employee),
+            skudReadyThrough,
+          ),
+        );
+        return [
+          group.name,
+          employee.name,
+          formatScheduleText(employee.schedule),
+          ...cells.map((cell) => {
+            const timeText = cellTimeText(cell);
+            return timeText ? `${cell.label} ${timeText}` : cell.label;
+          }),
+          roundHours(cells.reduce((sum, cell) => sum + cell.hours, 0)),
+        ];
+      }),
+    );
+    const hourRows = groups.flatMap((group) =>
+      group.rows.map((employee) => {
+        const cells = monthDays.map((day) =>
+          cellFor(
+            employee,
+            day,
+            factFor(employee, day.date),
+            overrideFor(employee, day.date),
+            planAnchorFor(employee),
+            skudReadyThrough,
+          ),
+        );
+        return [
+          group.name,
+          employee.name,
+          formatScheduleText(employee.schedule),
+          ...cells.map((cell) => (cell.hours ? roundHours(cell.hours) : 0)),
+          roundHours(cells.reduce((sum, cell) => sum + cell.hours, 0)),
+        ];
+      }),
+    );
+    const workbook = XLSX.utils.book_new();
+    const labelSheet = XLSX.utils.aoa_to_sheet([
+      [`Табель за ${formatMonthName(selectedMonth)}`],
+      [`Выгружено: ${formatDateTime(new Date().toISOString())}`],
+      [],
+      header,
+      ...labelRows,
+    ]);
+    const hourSheet = XLSX.utils.aoa_to_sheet([
+      [`Часы за ${formatMonthName(selectedMonth)}`],
+      [`Выгружено: ${formatDateTime(new Date().toISOString())}`],
+      [],
+      header,
+      ...hourRows,
+    ]);
+    const widths = [
+      { wch: 28 },
+      { wch: 34 },
+      { wch: 18 },
+      ...monthDays.map(() => ({ wch: 9 })),
+      { wch: 12 },
+    ];
+    labelSheet["!cols"] = widths;
+    hourSheet["!cols"] = widths;
+    XLSX.utils.book_append_sheet(workbook, labelSheet, "Табель");
+    XLSX.utils.book_append_sheet(workbook, hourSheet, "Часы");
+    const suffix =
+      department === "all"
+        ? "все"
+        : department.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, "_").slice(0, 40);
+    XLSX.writeFile(workbook, `timesheet_${selectedMonth}_${suffix}.xlsx`);
+  };
   return (
     <>
       <PageHead
@@ -1988,7 +2074,7 @@ function Timesheet({
             </option>
           ))}
         </select>
-        <button className="outline">
+        <button className="outline" onClick={exportTimesheet}>
           <Download />
           Экспорт
         </button>
