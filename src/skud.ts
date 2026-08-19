@@ -218,10 +218,7 @@ function statusFor(
     );
     return "Ранний уход";
   }
-  if (count > 2) {
-    issues.push(`Зафиксировано событий: ${count}`);
-    return "Выход в течение дня";
-  }
+  if (count > 2) issues.push(`Зафиксировано событий: ${count}`);
   return "ОК";
 }
 function calculate(raw: Raw): SkudEmployee {

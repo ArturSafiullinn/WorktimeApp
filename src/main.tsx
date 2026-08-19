@@ -1360,6 +1360,24 @@ const isProblemResolvedByOverride = (
     (row) =>
       Number(row.employee_id) === Number(e.id) && row.work_date === e.date,
   );
+const isAcceptedExtraEventDay = (e: Employee) => {
+  if (
+    e.status !== "Выход в течение дня" ||
+    !isRegularSchedule(e) ||
+    e.entry === "—" ||
+    e.exit === "—"
+  )
+    return false;
+  const { start: plannedStart, end: plannedEnd } = plannedBoundsFor(e);
+  const entry = timeMinutes(e.entry);
+  const exit = timeMinutes(e.exit);
+  const tolerance = hasSalesDepartmentTolerance(e.department) ? 15 : SKUD_RULES.lateThresholdMin;
+  return (
+    ![plannedStart, plannedEnd, entry, exit].some(Number.isNaN) &&
+    entry <= plannedStart + tolerance &&
+    exit >= plannedEnd - tolerance
+  );
+};
 const isOpenProblem = (
   e: Employee,
   overrides: WorkOverride[] = [],
@@ -1368,6 +1386,7 @@ const isOpenProblem = (
   isActionableProblem(e, skudReadyThrough) &&
   !hasCompensatedEarlyLeave(e) &&
   !hasSalesDepartmentAcceptedAttendance(e) &&
+  !isAcceptedExtraEventDay(e) &&
   !isNoAttendanceRecord(e) &&
   !isProblemResolvedByOverride(e, overrides);
 const visibleStatus = (e: Employee, skudReadyThrough?: string): Status =>
