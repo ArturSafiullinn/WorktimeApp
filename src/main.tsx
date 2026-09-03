@@ -1947,31 +1947,7 @@ function Timesheet({
       ...monthDays.map((d) => `${d.day} ${d.weekday}`),
       "Итого",
     ];
-    const labelRows = groups.flatMap((group) =>
-      group.rows.map((employee) => {
-        const cells = monthDays.map((day) =>
-          cellFor(
-            employee,
-            day,
-            factFor(employee, day.date),
-            overrideFor(employee, day.date),
-            planAnchorFor(employee),
-            skudReadyThrough,
-          ),
-        );
-        return [
-          group.name,
-          employee.name,
-          formatScheduleText(employee.schedule),
-          ...cells.map((cell) => {
-            const timeText = cellTimeText(cell);
-            return timeText ? `${cell.label} ${timeText}` : cell.label;
-          }),
-          roundHours(cells.reduce((sum, cell) => sum + cell.hours, 0)),
-        ];
-      }),
-    );
-    const hourRows = groups.flatMap((group) =>
+    const rows = groups.flatMap((group) =>
       group.rows.map((employee) => {
         const cells = monthDays.map((day) =>
           cellFor(
@@ -1993,19 +1969,12 @@ function Timesheet({
       }),
     );
     const workbook = XLSX.utils.book_new();
-    const labelSheet = XLSX.utils.aoa_to_sheet([
-      [`Табель за ${formatMonthName(selectedMonth)}`],
+    const sheet = XLSX.utils.aoa_to_sheet([
+      [`Табель часов за ${formatMonthName(selectedMonth)}`],
       [`Выгружено: ${formatDateTime(new Date().toISOString())}`],
       [],
       header,
-      ...labelRows,
-    ]);
-    const hourSheet = XLSX.utils.aoa_to_sheet([
-      [`Часы за ${formatMonthName(selectedMonth)}`],
-      [`Выгружено: ${formatDateTime(new Date().toISOString())}`],
-      [],
-      header,
-      ...hourRows,
+      ...rows,
     ]);
     const widths = [
       { wch: 28 },
@@ -2014,10 +1983,8 @@ function Timesheet({
       ...monthDays.map(() => ({ wch: 9 })),
       { wch: 12 },
     ];
-    labelSheet["!cols"] = widths;
-    hourSheet["!cols"] = widths;
-    XLSX.utils.book_append_sheet(workbook, labelSheet, "Табель");
-    XLSX.utils.book_append_sheet(workbook, hourSheet, "Часы");
+    sheet["!cols"] = widths;
+    XLSX.utils.book_append_sheet(workbook, sheet, "Табель");
     const suffix =
       department === "all"
         ? "все"
