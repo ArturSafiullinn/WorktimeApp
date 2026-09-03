@@ -7,7 +7,6 @@ import {
   CalendarCheck,
   ChevronRight,
   Clock3,
-  Download,
   Eye,
   EyeOff,
   FileCheck2,
@@ -16,6 +15,7 @@ import {
   LayoutDashboard,
   LogOut,
   Menu,
+  Printer,
   Search,
   Settings2,
   ShieldCheck,
@@ -23,7 +23,6 @@ import {
   Users,
   X,
 } from "lucide-react";
-import * as XLSX from "xlsx";
 import { parseSkudWorkbook, SKUD_RULES } from "./skud";
 import "./styles.css";
 
@@ -1940,15 +1939,20 @@ function Timesheet({
     minWidth: `${330 + monthDays.length * 72}px`,
   };
   const exportTimesheet = () => {
-    const header = [
-      "Подразделение",
-      "Сотрудник",
-      "График",
-      ...monthDays.map((d) => `${d.day} ${d.weekday}`),
-      "Итого",
-    ];
-    const rows = groups.flatMap((group) =>
-      group.rows.map((employee) => {
+    const escapeHtml = (value: unknown) =>
+      String(value ?? "").replace(/[&<>"']/g, (char) =>
+        ({
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#39;",
+        })[char] || char,
+      );
+    const hoursText = (hours: number) => compactHours(roundHours(hours || 0));
+    const renderedGroups = groups
+      .map((group) => {
+        const rows = group.rows.map((employee) => {
         const cells = monthDays.map((day) =>
           cellFor(
             employee,
@@ -1959,37 +1963,77 @@ function Timesheet({
             skudReadyThrough,
           ),
         );
-        return [
-          group.name,
-          employee.name,
-          formatScheduleText(employee.schedule),
-          ...cells.map((cell) => (cell.hours ? roundHours(cell.hours) : 0)),
-          roundHours(cells.reduce((sum, cell) => sum + cell.hours, 0)),
-        ];
-      }),
-    );
-    const workbook = XLSX.utils.book_new();
-    const sheet = XLSX.utils.aoa_to_sheet([
-      [`Табель часов за ${formatMonthName(selectedMonth)}`],
-      [`Выгружено: ${formatDateTime(new Date().toISOString())}`],
-      [],
-      header,
-      ...rows,
-    ]);
-    const widths = [
-      { wch: 28 },
-      { wch: 34 },
-      { wch: 18 },
-      ...monthDays.map(() => ({ wch: 9 })),
-      { wch: 12 },
-    ];
-    sheet["!cols"] = widths;
-    XLSX.utils.book_append_sheet(workbook, sheet, "Табель");
-    const suffix =
-      department === "all"
-        ? "все"
-        : department.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, "_").slice(0, 40);
-    XLSX.writeFile(workbook, `timesheet_${selectedMonth}_${suffix}.xlsx`);
+          const total = cells.reduce((sum, cell) => sum + cell.hours, 0);
+          return `<tr><th>${escapeHtml(employee.name)}</th>${cells
+            .map((cell) => `<td>${hoursText(cell.hours)}</td>`)
+            .join("")}<td class="total">${hoursText(total)}</td></tr>`;
+        });
+        if (!rows.length) return "";
+        return `
+          <section>
+            <h2>${escapeHtml(group.name)}</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th class="name">ФИО</th>
+                  ${monthDays.map((day) => `<th>${day.day}</th>`).join("")}
+                  <th class="total">Итого</th>
+                </tr>
+              </thead>
+              <tbody>${rows.join("")}</tbody>
+            </table>
+          </section>
+        `;
+      })
+      .join("");
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      alert("Браузер заблокировал открытие печатной версии");
+      return;
+    }
+    printWindow.document.write(`
+      <!doctype html>
+      <html lang="ru">
+        <head>
+          <meta charset="utf-8" />
+          <title>Табель ${escapeHtml(formatMonthName(selectedMonth))}</title>
+          <style>
+            @page { size: A4 landscape; margin: 7mm; }
+            * { box-sizing: border-box; }
+            body { margin: 0; color: #111; font-family: Arial, sans-serif; background: #fff; }
+            .printBar { position: sticky; top: 0; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; background: #eef5f1; border-bottom: 1px solid #cfd8d3; }
+            .printBar b { font-size: 14px; }
+            .printBar span { color: #52635c; font-size: 12px; }
+            .printBar button { border: 1px solid #154f3c; border-radius: 6px; background: #155f48; color: #fff; padding: 8px 14px; font-weight: 700; cursor: pointer; }
+            main { padding: 5mm 0 0; }
+            section { break-inside: avoid; page-break-inside: avoid; margin: 0 0 6mm; }
+            h2 { margin: 0 0 2mm; font-size: 10pt; text-transform: uppercase; letter-spacing: .04em; }
+            table { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0; }
+            th, td { border: .4pt solid #222; height: 5.8mm; padding: .7mm .8mm; text-align: center; vertical-align: middle; font-size: 6.8pt; line-height: 1; }
+            thead th { background: #e9efec; font-weight: 700; }
+            th.name, tbody th { width: 43mm; text-align: left; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+            th.total, td.total { width: 11mm; font-weight: 700; background: #f3f6f4; }
+            @media print {
+              .printBar { display: none; }
+              main { padding-top: 0; }
+              h2 { margin-top: 0; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="printBar">
+            <div>
+              <b>Табель за ${escapeHtml(formatMonthName(selectedMonth))}</b>
+              <span>${escapeHtml(department === "all" ? "Все подразделения" : department)}</span>
+            </div>
+            <button onclick="window.print()">Печать</button>
+          </div>
+          <main>${renderedGroups}</main>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
   };
   return (
     <>
@@ -2042,8 +2086,8 @@ function Timesheet({
           ))}
         </select>
         <button className="outline" onClick={exportTimesheet}>
-          <Download />
-          Экспорт
+          <Printer />
+          Печать
         </button>
       </div>
       <div className="timesheetLegend">
