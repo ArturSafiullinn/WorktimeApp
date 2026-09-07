@@ -156,6 +156,7 @@ try {
   for (const [group, code] of [
     ["ТПА — литейщицы", "tpa_2x2"],
     ["Литейный цех — литейщики", "foundry_2x2"],
+    ["Литейный цех — наладчики", "foundry_24_3day"],
   ])
     await c.query(
       `UPDATE employee_schedules es SET schedule_id=st.id,source='schedule_model_correction' FROM employees e JOIN departments d ON d.id=e.department_id CROSS JOIN schedule_templates st WHERE es.employee_id=e.id AND es.effective_to IS NULL AND d.name=$1 AND st.code=$2`,

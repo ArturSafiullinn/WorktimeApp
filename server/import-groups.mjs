@@ -9,8 +9,16 @@ const rows = XLSX.utils.sheet_to_json(wb.Sheets["Сотрудники по гр�
   defval: null,
   raw: false,
 });
+const foundryDailySetupIds = new Set([161, 167, 403]);
+const foundryDailySetupDepartment = "Литейный цех — наладчики";
 const groups = [
-  ...new Set(rows.map((r) => String(r["Группа (рекомендация)"]).trim())),
+  ...new Set(
+    rows.map((r) =>
+      foundryDailySetupIds.has(Number(r["ID (ZkBio)"]))
+        ? foundryDailySetupDepartment
+        : String(r["Группа (рекомендация)"]).trim(),
+    ),
+  ),
 ];
 const scheduleByLabel = {
   "Сдельная, 08:00–17:00": [
@@ -79,7 +87,9 @@ try {
   const effectiveFrom = new Date().toISOString().slice(0, 10);
   for (const row of rows) {
     const id = Number(row["ID (ZkBio)"]),
-      group = String(row["Группа (рекомендация)"]).trim();
+      group = foundryDailySetupIds.has(id)
+        ? foundryDailySetupDepartment
+        : String(row["Группа (рекомендация)"]).trim();
     const note = row["Флаг для проверки"]
       ? String(row["Флаг для проверки"]).trim()
       : null;

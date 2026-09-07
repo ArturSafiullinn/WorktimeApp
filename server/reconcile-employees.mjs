@@ -12,6 +12,8 @@ const norm = (value) => String(value ?? "").trim().replace(/\s+/g, " ");
 const nameKey = (value) => norm(value).toLowerCase().replace(/ё/g, "е");
 const isExcludedFromTimesheet = (name) =>
   nameKey(name).includes("сафиуллин");
+const foundryDailySetupIds = new Set([161, 167, 403]);
+const foundryDailySetupDepartment = "Литейный цех — наладчики";
 const readMatrix = (file) => {
   const workbook = XLSX.readFile(file, { cellDates: false });
   return XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], {
@@ -30,8 +32,12 @@ const skudEmployees = skudRows
     name: norm(`${row[1]} ${row[2]}`),
     firstName: norm(row[1]),
     patronymic: norm(row[2]),
-    departmentExternalId: Number(row[3]) || null,
-    department: norm(row[4]) || "Без подразделения",
+    departmentExternalId: foundryDailySetupIds.has(Number(row[0]))
+      ? null
+      : Number(row[3]) || null,
+    department: foundryDailySetupIds.has(Number(row[0]))
+      ? foundryDailySetupDepartment
+      : norm(row[4]) || "Без подразделения",
     gender: norm(row[5]) || null,
     cardNumber: norm(row[6]) || null,
     skudPosition: norm(row[8]) || null,
