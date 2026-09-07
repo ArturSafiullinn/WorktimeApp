@@ -1650,7 +1650,9 @@ function plannedCellFor(
     const start = item.start || "08:00",
       end = item.end || "17:00";
     const label =
-      item.type === "night"
+      item.type === "24h"
+        ? "С"
+        : item.type === "night"
         ? "Н"
         : item.type === "day"
           ? "Д"
@@ -3628,7 +3630,7 @@ function SkudImport({
           )
           .map((employee) => [employee.id, employee]),
       );
-      const rows = (parseSkudWorkbook(await file.arrayBuffer()) as Employee[])
+      const rows = (parseSkudWorkbook(await file.arrayBuffer(), rosterById) as Employee[])
         .filter((row) => !isExcludedEmployeeName(row.name))
         .filter((row) => {
           const roster = rosterById.get(row.id);

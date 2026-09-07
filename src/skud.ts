@@ -26,6 +26,14 @@ export type SkudEmployee = {
   recordCount?: number;
   issues?: string[];
 };
+export type SkudScheduleHint = {
+  id: number;
+  schedule?: string;
+  scheduleCode?: string;
+  scheduleKind?: string;
+  schedulePattern?: any;
+  schedulePaidHours?: number;
+};
 
 type Raw = {
   id: number;
@@ -35,6 +43,7 @@ type Raw = {
   first: number | null;
   last: number | null;
   count: number;
+  schedule?: SkudScheduleHint;
   overnightShift?: boolean;
 };
 type Schedule = {
@@ -42,6 +51,7 @@ type Schedule = {
   end: number;
   lunch: number;
   minLunch: number;
+  paidHours?: number;
   overnight?: boolean;
   cleanTime?: boolean;
 };
@@ -53,12 +63,63 @@ export const SKUD_RULES = {
   minValidIntervalMin: 60,
   overtimeThresholdMin: 30,
   shiftToleranceMin: 60,
+  dailyShiftBoundaryToleranceMin: 120,
 };
 const overnightIds = new Set([
   250, 251, 252, 254, 255, 256, 257, 258, 259, 234, 235, 237,
 ]);
+const timeFromPattern = (value: unknown) => {
+  const result = minutes(value);
+  return result == null ? undefined : result;
+};
+function scheduleFromHint(hint?: SkudScheduleHint): Schedule | null {
+  if (!hint) return null;
+  const code = String(hint.scheduleCode || "");
+  const pattern = Array.isArray(hint.schedulePattern) ? hint.schedulePattern : [];
+  const dailyItem = pattern.find(
+    (item) =>
+      item?.type === "24h" ||
+      (item?.crosses_midnight && Number(hint.schedulePaidHours) >= 20),
+  );
+  if (dailyItem || ["security24", "day24", "foundry_24_3day"].includes(code)) {
+    const start =
+      timeFromPattern(dailyItem?.start) ??
+      (code === "security24" ? 420 : 480);
+    const end = timeFromPattern(dailyItem?.end) ?? start;
+    return {
+      start,
+      end,
+      lunch: 0,
+      minLunch: 0,
+      paidHours: Number(hint.schedulePaidHours) || 24,
+      overnight: true,
+    };
+  }
+  if (
+    hint.scheduleKind === "rolling" &&
+    Number(hint.schedulePaidHours) >= 20
+  ) {
+    const start = code === "security24" ? 420 : 480;
+    return {
+      start,
+      end: start,
+      lunch: 0,
+      minLunch: 0,
+      paidHours: Number(hint.schedulePaidHours) || 24,
+      overnight: true,
+    };
+  }
+  return null;
+}
 
-function scheduleFor(id: number, department: string, date: string): Schedule {
+function scheduleFor(
+  id: number,
+  department: string,
+  date: string,
+  hint?: SkudScheduleHint,
+): Schedule {
+  const hinted = scheduleFromHint(hint);
+  if (hinted) return hinted;
   if (overnightIds.has(id))
     return {
       start: [250, 251, 252, 254, 255, 256, 257, 258, 259].includes(id)
@@ -69,6 +130,7 @@ function scheduleFor(id: number, department: string, date: string): Schedule {
         : 480,
       lunch: 0,
       minLunch: 0,
+      paidHours: 24,
       overnight: true,
     };
   if (id === 193) return { start: 450, end: 930, lunch: 0, minLunch: 0 };
@@ -78,7 +140,14 @@ function scheduleFor(id: number, department: string, date: string): Schedule {
     return { start: 0, end: 1440, lunch: 0, minLunch: 0, cleanTime: true };
   const d = department.toLowerCase();
   if (d.includes("служба безопасности"))
-    return { start: 420, end: 420, lunch: 0, minLunch: 0, overnight: true };
+    return {
+      start: 420,
+      end: 420,
+      lunch: 0,
+      minLunch: 0,
+      paidHours: 24,
+      overnight: true,
+    };
   if (d.includes("литей") || d.includes("тпа"))
     return { start: 480, end: 1200, lunch: 0, minLunch: 0 };
   return { start: 480, end: 1020, lunch: 60, minLunch: 300 };
@@ -222,7 +291,7 @@ function statusFor(
   return "ОК";
 }
 function calculate(raw: Raw): SkudEmployee {
-  const baseSchedule = scheduleFor(raw.id, raw.department, raw.date);
+  const baseSchedule = scheduleFor(raw.id, raw.department, raw.date, raw.schedule);
   const noLunch = hasMetalworkingNoLunchException(raw.name, raw.department);
   const s = {
       ...baseSchedule,
@@ -257,7 +326,8 @@ function calculate(raw: Raw): SkudEmployee {
       allowedHusainovOzonDeparture(raw.name, raw.department, raw.first, raw.last, s)
     ) {
       fact = Math.max(0, (s.end - s.start - s.lunch) / 60);
-    } else if (s.cleanTime || s.overnight || s.lunch <= 0) fact = duration / 60;
+    } else if (s.overnight) fact = s.paidHours || 24;
+    else if (s.cleanTime || s.lunch <= 0) fact = duration / 60;
     else {
       const worked = Math.max(
         0,
@@ -285,7 +355,14 @@ function calculate(raw: Raw): SkudEmployee {
   };
 }
 
-export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
+export function parseSkudWorkbook(
+  buffer: ArrayBuffer,
+  scheduleHints?: Map<number, SkudScheduleHint> | SkudScheduleHint[],
+): SkudEmployee[] {
+  const scheduleById =
+    scheduleHints instanceof Map
+      ? scheduleHints
+      : new Map((scheduleHints || []).map((hint) => [hint.id, hint]));
   const wb = XLSX.read(buffer, { type: "array", cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, {
@@ -350,7 +427,16 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
                 : Math.max(old.last, last),
           count: old.count + count,
         }
-      : { id, name, department, date, first, last, count };
+      : {
+          id,
+          name,
+          department,
+          date,
+          first,
+          last,
+          count,
+          schedule: scheduleById.get(id),
+        };
     map.set(
       key,
       looksLikeSameRowEveningToNight(raw.first, raw.last) &&
@@ -414,7 +500,7 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
   // Суточники: как в WorkSchedule, склеиваем вход первого дня и выход следующего.
   const overnightCapableIds = new Set(
     raw
-      .filter((r) => scheduleFor(r.id, r.department, r.date).overnight)
+      .filter((r) => scheduleFor(r.id, r.department, r.date, r.schedule).overnight)
       .map((r) => r.id),
   );
   for (const id of overnightCapableIds) {
@@ -424,15 +510,17 @@ export function parseSkudWorkbook(buffer: ArrayBuffer): SkudEmployee[] {
     for (let i = 0; i < group.length - 1; i++) {
       const head = group[i],
         tail = group[i + 1],
-        s = scheduleFor(id, head.department, head.date);
+        s = scheduleFor(id, head.department, head.date, head.schedule);
       const dayGap = (Date.parse(tail.date) - Date.parse(head.date)) / 86400000;
       if (dayGap !== 1 || head.first == null || tail.last == null) continue;
       const nearStart =
-        Math.abs(head.first - s.start) <= SKUD_RULES.shiftToleranceMin;
+        Math.abs(head.first - s.start) <=
+        SKUD_RULES.dailyShiftBoundaryToleranceMin;
       const nearEnd =
-        Math.abs(tail.last - s.end) <= SKUD_RULES.shiftToleranceMin;
+        Math.abs(tail.last - s.end) <=
+        SKUD_RULES.dailyShiftBoundaryToleranceMin;
       const duration = 1440 - head.first + tail.last;
-      if (nearStart && nearEnd && duration >= 23 * 60 && duration <= 25 * 60) {
+      if (nearStart && nearEnd && duration >= 22 * 60 && duration <= 27 * 60) {
         head.last = tail.last + 1440;
         head.count = Math.max(2, head.count + tail.count);
         head.overnightShift = true;

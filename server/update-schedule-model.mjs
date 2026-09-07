@@ -112,6 +112,29 @@ const templates = [
     ],
     true,
   ],
+  [
+    "foundry_24_3day",
+    "Литейный цех - сутки 08:00-08:00 / 2 выходных",
+    "08:00",
+    "08:00",
+    true,
+    24,
+    0,
+    true,
+    "cycle",
+    [
+      {
+        day: 1,
+        type: "24h",
+        start: "08:00",
+        end: "08:00",
+        crosses_midnight: true,
+      },
+      { day: 2, type: "off" },
+      { day: 3, type: "off" },
+    ],
+    true,
+  ],
 ];
 const c = await pool.connect();
 try {
