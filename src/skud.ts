@@ -326,7 +326,7 @@ function calculate(raw: Raw): SkudEmployee {
       allowedHusainovOzonDeparture(raw.name, raw.department, raw.first, raw.last, s)
     ) {
       fact = Math.max(0, (s.end - s.start - s.lunch) / 60);
-    } else if (s.overnight) fact = s.paidHours || 24;
+    } else if (s.overnight) fact = s.paidHours || duration / 60;
     else if (s.cleanTime || s.lunch <= 0) fact = duration / 60;
     else {
       const worked = Math.max(
