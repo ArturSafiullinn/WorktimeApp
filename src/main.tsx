@@ -4336,6 +4336,14 @@ function EmployeeDirectory({
     "active",
   );
   const [selected, setSelected] = useState<Employee | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState({
+    id: "",
+    name: "",
+    cardNumber: "",
+    departmentId: "",
+    scheduleId: "",
+  });
   const [departments, setDepartments] = useState<any[]>([]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [from, setFrom] = useState(localDateString());
@@ -4390,6 +4398,70 @@ function EmployeeDirectory({
     );
     setSelected(updated);
     setMessage("Сохранено в PostgreSQL");
+  };
+  const startCreate = () => {
+    const firstDepartment = departments.find((d) => d.active);
+    setDraft({
+      id: "",
+      name: "",
+      cardNumber: "",
+      departmentId: firstDepartment?.id ? String(firstDepartment.id) : "",
+      scheduleId: "",
+    });
+    setFrom(localDateString());
+    setSelected(null);
+    setCreating(true);
+    setEmployeeStatus("active");
+    setMessage("");
+  };
+  const createEmployee = async () => {
+    const response = await fetch("/api/employees", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: Number(draft.id),
+        full_name: draft.name,
+        card_number: draft.cardNumber,
+        department_id: draft.departmentId ? Number(draft.departmentId) : null,
+        schedule_id: draft.scheduleId ? Number(draft.scheduleId) : null,
+        effective_from: from,
+      }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      setMessage(error.error || "Не удалось добавить сотрудника");
+      return;
+    }
+    const department = departments.find(
+      (d) => Number(d.id) === Number(draft.departmentId),
+    );
+    const schedule = schedules.find(
+      (s) => Number(s.id) === Number(draft.scheduleId),
+    );
+    const created: Employee = {
+      id: Number(draft.id),
+      name: draft.name.trim(),
+      initials: initialsFromName(draft.name),
+      department: department?.name || "Без подразделения",
+      schedule: schedule?.name || "График не назначен",
+      entry: "—",
+      exit: "—",
+      fact: 0,
+      total: 0,
+      combo: 0,
+      status: "ОК",
+      departmentId: department ? Number(department.id) : undefined,
+      scheduleId: schedule ? Number(schedule.id) : undefined,
+      scheduleCode: schedule?.code,
+      scheduleKind: schedule?.schedule_kind,
+      schedulePattern: schedule?.cycle_pattern,
+      schedulePaidHours: schedule?.paid_hours,
+      active: true,
+    };
+    setEmployees([...employees, created]);
+    setSelected(created);
+    setCreating(false);
+    setMessage("Сотрудник добавлен");
   };
   const setEmployeeActive = async (employee: Employee, active: boolean) => {
     const action = active ? "восстановить" : "уволить";
@@ -4462,6 +4534,7 @@ function EmployeeDirectory({
               onClick={() => {
                 setEmployeeStatus("active");
                 setSelected(null);
+                setCreating(false);
                 setMessage("");
               }}
             >
@@ -4472,12 +4545,16 @@ function EmployeeDirectory({
               onClick={() => {
                 setEmployeeStatus("dismissed");
                 setSelected(null);
+                setCreating(false);
                 setMessage("");
               }}
             >
               Уволенные
             </button>
           </div>
+          <button className="outline addDepartment" onClick={startCreate}>
+            + Новый сотрудник
+          </button>
           <div className="search directorySearch">
             <Search />
             <input
@@ -4514,7 +4591,107 @@ function EmployeeDirectory({
           </div>
         </div>
         <div>
-          {selected ? (
+          {creating ? (
+            <div className="panel editor stickyEditor">
+              <span className="eyebrow">НОВЫЙ СОТРУДНИК</span>
+              <h2>Добавить сотрудника</h2>
+              <label>
+                ID сотрудника из ZKAccess
+                <input
+                  type="number"
+                  min="1"
+                  value={draft.id}
+                  onChange={(e) => setDraft({ ...draft, id: e.target.value })}
+                  placeholder="Например: 412"
+                />
+              </label>
+              <label>
+                ФИО
+                <input
+                  type="text"
+                  value={draft.name}
+                  onChange={(e) =>
+                    setDraft({ ...draft, name: e.target.value })
+                  }
+                  placeholder="Фамилия Имя Отчество"
+                />
+              </label>
+              <label>
+                Номер карты
+                <input
+                  type="text"
+                  value={draft.cardNumber}
+                  onChange={(e) =>
+                    setDraft({ ...draft, cardNumber: e.target.value })
+                  }
+                  placeholder="Можно оставить пустым"
+                />
+              </label>
+              <label>
+                Подразделение
+                <select
+                  value={draft.departmentId}
+                  onChange={(e) =>
+                    setDraft({ ...draft, departmentId: e.target.value })
+                  }
+                >
+                  <option value="">Выберите подразделение</option>
+                  {departments
+                    .filter((d) => d.active)
+                    .map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Постоянный график
+                <select
+                  value={draft.scheduleId}
+                  onChange={(e) =>
+                    setDraft({ ...draft, scheduleId: e.target.value })
+                  }
+                >
+                  <option value="">График не назначен</option>
+                  {schedules.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                График действует с
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  placeholder="дд-мм-гггг"
+                  value={formatDate(from)}
+                  onChange={(e) => setFrom(parseDisplayDate(e.target.value))}
+                />
+              </label>
+              {message && (
+                <div
+                  className={message.includes("добавлен") ? "success" : "error"}
+                >
+                  {message}
+                </div>
+              )}
+              <button className="primary" onClick={createEmployee}>
+                Добавить сотрудника
+              </button>
+              <button
+                className="outline"
+                onClick={() => {
+                  setCreating(false);
+                  setMessage("");
+                }}
+              >
+                Отмена
+              </button>
+            </div>
+          ) : selected ? (
             <div className="panel editor stickyEditor">
               <span className="eyebrow">СОТРУДНИК #{selected.id}</span>
               <h2>{selected.name}</h2>
@@ -4604,7 +4781,10 @@ function EmployeeDirectory({
               {message && (
                 <div
                   className={
-                    message.startsWith("Сохранено") ? "success" : "error"
+                    message.startsWith("Сохранено") ||
+                    message.includes("добавлен")
+                      ? "success"
+                      : "error"
                   }
                 >
                   {message}

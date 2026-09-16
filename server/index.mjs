@@ -648,6 +648,60 @@ app.get("/api/employees", async (req, res) => {
     safeError(res);
   }
 });
+app.post("/api/employees", requireRole("admin"), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const id = Number(req.body?.id),
+      fullName = String(req.body?.full_name || "").trim(),
+      departmentId = Number(req.body?.department_id),
+      scheduleId = req.body?.schedule_id ? Number(req.body.schedule_id) : null,
+      effectiveFrom = req.body?.effective_from || new Date().toISOString().slice(0, 10),
+      cardNumber = String(req.body?.card_number || "").trim() || null;
+    if (!Number.isInteger(id) || id <= 0)
+      throw new Error("Укажите ID сотрудника из ZKAccess");
+    if (!fullName) throw new Error("Укажите ФИО сотрудника");
+    if (!Number.isInteger(departmentId))
+      throw new Error("Выберите подразделение");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveFrom))
+      throw new Error("Проверьте дату начала графика");
+    await client.query("BEGIN");
+    const duplicate = await client.query(
+      "SELECT 1 FROM employees WHERE id=$1 LIMIT 1",
+      [id],
+    );
+    if (duplicate.rowCount) throw new Error("Сотрудник с таким ID уже есть");
+    const department = await client.query(
+      "SELECT id FROM departments WHERE id=$1 AND active=true",
+      [departmentId],
+    );
+    if (!department.rowCount) throw new Error("Подразделение не найдено");
+    if (scheduleId) {
+      const schedule = await client.query(
+        "SELECT id FROM schedule_templates WHERE id=$1",
+        [scheduleId],
+      );
+      if (!schedule.rowCount) throw new Error("График не найден");
+    }
+    await client.query(
+      `INSERT INTO employees(id,full_name,department_id,card_number,active,needs_review,review_note,updated_at)
+       VALUES($1,$2,$3,$4,true,false,NULL,now())`,
+      [id, fullName, departmentId, cardNumber],
+    );
+    if (scheduleId)
+      await client.query(
+        `INSERT INTO employee_schedules(employee_id,schedule_id,effective_from,source)
+         VALUES($1,$2,$3,'manual')`,
+        [id, scheduleId, effectiveFrom],
+      );
+    await client.query("COMMIT");
+    res.status(201).json({ ok: true, id });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
 app.patch("/api/employees/:id", requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
   try {
