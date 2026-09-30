@@ -616,6 +616,12 @@ function App() {
                 onClick={() => go("admin")}
               />
               <Nav
+                icon={<UploadCloud />}
+                label="ZkBio"
+                active={page === "zkbio"}
+                onClick={() => go("zkbio")}
+              />
+              <Nav
                 icon={<Building2 />}
                 label="Подразделения"
                 active={page === "departments"}
@@ -805,6 +811,14 @@ function App() {
               employees={employees}
               onAccountsChange={refreshAccounts}
               onEmployeesRefresh={refreshWorkData}
+            />
+          )}
+          {page === "zkbio" && (
+            <Admin
+              employees={employees}
+              onAccountsChange={refreshAccounts}
+              onEmployeesRefresh={refreshWorkData}
+              syncOnly
             />
           )}
           {page === "account" && (
@@ -4855,10 +4869,12 @@ function Admin({
   employees,
   onAccountsChange,
   onEmployeesRefresh,
+  syncOnly = false,
 }: {
   employees: Employee[];
   onAccountsChange: () => Promise<Record<string, Account>>;
   onEmployeesRefresh: () => Promise<void>;
+  syncOnly?: boolean;
 }) {
   const emptyUser = {
     login: "",
@@ -5091,6 +5107,114 @@ function Admin({
     reset();
     setMessage("Пользователь удалён");
   };
+  const zkBioPanel = (
+    <div className="panel zkbioSync">
+      <div className="panelHead">
+        <div>
+          <span className="eyebrow">ZKBIO</span>
+          <h2>Синхронизация сотрудников</h2>
+        </div>
+        <label className="outline fileButton">
+          Выбрать XLS/XLSX
+          <input
+            type="file"
+            accept=".xls,.xlsx"
+            onChange={(event) => loadZkBioFile(event.target.files?.[0])}
+          />
+        </label>
+      </div>
+      <div className="zkbioBody">
+        <div className="notice compact">
+          <UploadCloud />
+          <div>
+            <b>{zkBioImport.name || "Загрузите выгрузку «Сотрудник» из ZkBio"}</b>
+            <p>
+              Импорт обновляет только номер карты и статус уволен/работает.
+              Подразделения и графики из файла не переносятся.
+            </p>
+          </div>
+        </div>
+        {zkBioRows.length > 0 && (
+          <>
+            <div className="zkbioStats">
+              <span>
+                <b>{zkBioRows.length}</b>
+                строк в файле
+              </span>
+              <span>
+                <b>{zkBioPreview.cardUpdates}</b>
+                карт изменится
+              </span>
+              <span>
+                <b>{zkBioPreview.deactivate}</b>
+                будут уволены
+              </span>
+              <span>
+                <b>{zkBioPreview.reactivate}</b>
+                будут восстановлены
+              </span>
+              <span>
+                <b>{zkBioPreview.newActive}</b>
+                новых на настройку
+              </span>
+            </div>
+            <div className="zkbioPreview">
+              {zkBioRows
+                .filter((row) => !rosterById.has(row.id) || row.active === false)
+                .slice(0, 6)
+                .map((row) => (
+                  <div className="adminRow" key={row.id}>
+                    <span className="avatar sm">{initialsFromName(row.name)}</span>
+                    <div>
+                      <b>{row.name}</b>
+                      <small>
+                        #{row.id} · карта {row.cardNumber || "не указана"} ·{" "}
+                        {row.active ? "новый сотрудник" : "уволен в ZkBio"}
+                      </small>
+                    </div>
+                    <span className="role">{row.active ? "Настроить" : "Пропуск"}</span>
+                  </div>
+                ))}
+            </div>
+            {zkBioPreview.skippedNewDismissed > 0 && (
+              <div className="more">
+                Новые уволенные из файла не будут добавлены:{" "}
+                {zkBioPreview.skippedNewDismissed}
+              </div>
+            )}
+            {zkBioImport.report && (
+              <div className="success">
+                Синхронизация выполнена: карт обновлено{" "}
+                {zkBioImport.report.cardUpdates}, новых сотрудников{" "}
+                {zkBioImport.report.insertedEmployees}, уволено{" "}
+                {zkBioImport.report.deactivatedEmployees}, восстановлено{" "}
+                {zkBioImport.report.reactivatedEmployees}.
+              </div>
+            )}
+            <button
+              className="primary"
+              disabled={zkBioImport.saving}
+              onClick={applyZkBioImport}
+            >
+              {zkBioImport.saving ? "Синхронизирую..." : "Применить синхронизацию"}
+            </button>
+          </>
+        )}
+        {zkBioImport.error && <div className="error">{zkBioImport.error}</div>}
+      </div>
+    </div>
+  );
+  if (syncOnly)
+    return (
+      <>
+        <PageHead
+          eye="ZKBIO"
+          title="Синхронизация сотрудников"
+          text="Обновление карт и статусов без переноса подразделений и графиков"
+        />
+        {zkBioPanel}
+      </>
+    );
   return (
     <>
       <PageHead
@@ -6348,6 +6472,7 @@ const title = (p: string) =>
       import: "Импорт СКУД",
       employees: "Сотрудники",
       admin: "Пользователи",
+      zkbio: "ZkBio",
       account: "Моя учетная запись",
       departments: "Подразделения",
       exceptions: "Исключения",
