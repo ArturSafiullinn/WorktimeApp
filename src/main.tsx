@@ -24,6 +24,10 @@ import {
   X,
 } from "lucide-react";
 import { parseSkudWorkbook, SKUD_RULES } from "./skud";
+import {
+  parseZkBioEmployeeWorkbook,
+  type ZkBioEmployeeImportRow,
+} from "./zkbio";
 import "./styles.css";
 
 type Role = "admin" | "observer" | "boss";
@@ -229,7 +233,7 @@ const employeeFromApi = (e: any): Employee => ({
   id: e.id,
   name: e.name,
   initials: initialsFromName(e.name),
-  department: e.department,
+  department: e.department || "Без подразделения",
   schedule: formatScheduleText(e.schedule || "График не назначен"),
   departmentId: nullableNumber(e.department_id),
   scheduleId: nullableNumber(e.schedule_id),
@@ -434,6 +438,35 @@ function App() {
     setAccountRevision((revision) => revision + 1);
     return next;
   };
+  const refreshWorkData = useCallback(async () => {
+    if (!role) return;
+    const [employeeRows, skudRows, overrideRows] = await Promise.all([
+      fetch("/api/employees?active=all").then((r) =>
+        r.ok ? r.json() : Promise.reject(new Error("API недоступен")),
+      ),
+      fetch(`/api/skud-days?month=${selectedMonth}`).then((r) =>
+        r.ok ? r.json() : [],
+      ),
+      fetch(`/api/schedule-overrides?month=${selectedMonth}`).then((r) =>
+        r.ok ? r.json() : [],
+      ),
+    ]);
+    const rosterRows = employeeRows.map(employeeFromApi);
+    const departmentByEmployee = new Map(
+      rosterRows.map((employee) => [employee.id, employee.departmentId]),
+    );
+    setGlobalOverrides(overrideRows);
+    setEmployees([
+      ...rosterRows,
+      ...skudRows.map((row: any) =>
+        employeeFromApi({
+          ...row,
+          department_id:
+            row.department_id ?? departmentByEmployee.get(Number(row.id)),
+        }),
+      ),
+    ]);
+  }, [role, selectedMonth]);
   const assignedIds = accounts[user]?.employeeIds || [];
   const assignedDepartmentIds = accounts[user]?.departmentIds || [];
   const hasBossScope =
@@ -477,37 +510,12 @@ function App() {
       : employees.find((x) => x.id === selected?.id && !x.date);
   useEffect(() => {
     if (!role) return;
-    Promise.all([
-      fetch("/api/employees?active=all").then((r) =>
-        r.ok ? r.json() : Promise.reject(new Error("API недоступен")),
-      ),
-      fetch(`/api/skud-days?month=${selectedMonth}`).then((r) => (r.ok ? r.json() : [])),
-      fetch(`/api/schedule-overrides?month=${selectedMonth}`).then((r) =>
-        r.ok ? r.json() : [],
-      ),
-    ])
-      .then(([employeeRows, skudRows, overrideRows]) => {
-        const rosterRows = employeeRows.map(employeeFromApi);
-        const departmentByEmployee = new Map(
-          rosterRows.map((employee) => [employee.id, employee.departmentId]),
-        );
-        setGlobalOverrides(overrideRows);
-        setEmployees([
-          ...rosterRows,
-          ...skudRows.map((row: any) =>
-            employeeFromApi({
-              ...row,
-              department_id:
-                row.department_id ?? departmentByEmployee.get(Number(row.id)),
-            }),
-          ),
-        ]);
-      })
+    refreshWorkData()
       .catch(() => {
         setGlobalOverrides([]);
         setEmployees([]);
       });
-  }, [role, selectedMonth]);
+  }, [role, refreshWorkData]);
   useEffect(() => {
     window.addEventListener("worktime:auth-expired", logout);
     return () => window.removeEventListener("worktime:auth-expired", logout);
@@ -793,7 +801,11 @@ function App() {
             )
           )}
           {page === "admin" && (
-            <Admin employees={employees} onAccountsChange={refreshAccounts} />
+            <Admin
+              employees={employees}
+              onAccountsChange={refreshAccounts}
+              onEmployeesRefresh={refreshWorkData}
+            />
           )}
           {page === "account" && (
             <AccountSettings
@@ -4842,9 +4854,11 @@ function EmployeeDirectory({
 function Admin({
   employees,
   onAccountsChange,
+  onEmployeesRefresh,
 }: {
   employees: Employee[];
   onAccountsChange: () => Promise<Record<string, Account>>;
+  onEmployeesRefresh: () => Promise<void>;
 }) {
   const emptyUser = {
     login: "",
@@ -4861,6 +4875,13 @@ function Admin({
   const [message, setMessage] = useState("");
   const [departmentQuery, setDepartmentQuery] = useState("");
   const [employeeQuery, setEmployeeQuery] = useState("");
+  const [zkBioImport, setZkBioImport] = useState<{
+    name?: string;
+    rows?: ZkBioEmployeeImportRow[];
+    error?: string;
+    saving?: boolean;
+    report?: any;
+  }>({});
   useEffect(() => {
     onAccountsChange()
       .then((next) => setRows({ ...next }))
@@ -4883,6 +4904,67 @@ function Admin({
   const filteredEmployees = uniqueEmployees.filter((e) =>
     matchesSearch(`${e.name} ${e.department} ${e.id}`, employeeQuery),
   );
+  const rosterById = new Map(uniqueEmployees.map((employee) => [employee.id, employee]));
+  const zkBioRows = zkBioImport.rows || [];
+  const zkBioPreview = zkBioRows.reduce(
+    (summary, row) => {
+      const employee = rosterById.get(row.id);
+      if (!employee) {
+        if (row.active) summary.newActive++;
+        else summary.skippedNewDismissed++;
+        return summary;
+      }
+      if (String(employee.cardNumber || "") !== String(row.cardNumber || ""))
+        summary.cardUpdates++;
+      if (employee.active !== false && !row.active) summary.deactivate++;
+      if (employee.active === false && row.active) summary.reactivate++;
+      return summary;
+    },
+    {
+      cardUpdates: 0,
+      deactivate: 0,
+      reactivate: 0,
+      newActive: 0,
+      skippedNewDismissed: 0,
+    },
+  );
+  const loadZkBioFile = async (file?: File) => {
+    if (!file) return;
+    try {
+      const rows = parseZkBioEmployeeWorkbook(await file.arrayBuffer());
+      setZkBioImport({ name: file.name, rows });
+    } catch (error) {
+      setZkBioImport({
+        name: file.name,
+        error: error instanceof Error ? error.message : "Не удалось прочитать файл",
+      });
+    }
+  };
+  const applyZkBioImport = async () => {
+    if (!zkBioRows.length) return;
+    setZkBioImport({ ...zkBioImport, saving: true, error: undefined });
+    const response = await fetch("/api/employees/zkbio-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows: zkBioRows }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      setZkBioImport({
+        ...zkBioImport,
+        saving: false,
+        error: error.error || "Не удалось синхронизировать сотрудников",
+      });
+      return;
+    }
+    const result = await response.json();
+    await onEmployeesRefresh();
+    setZkBioImport({
+      ...zkBioImport,
+      saving: false,
+      report: result.report,
+    });
+  };
   const persist = async (
     login: string,
     account: Account,
@@ -5216,6 +5298,101 @@ function Admin({
               Удалить пользователя
             </button>
           )}
+        </div>
+      </div>
+      <div className="panel zkbioSync">
+        <div className="panelHead">
+          <div>
+            <span className="eyebrow">ZKBIO</span>
+            <h2>Синхронизация сотрудников</h2>
+          </div>
+          <label className="outline fileButton">
+            Выбрать XLS/XLSX
+            <input
+              type="file"
+              accept=".xls,.xlsx"
+              onChange={(event) => loadZkBioFile(event.target.files?.[0])}
+            />
+          </label>
+        </div>
+        <div className="zkbioBody">
+          <div className="notice compact">
+            <UploadCloud />
+            <div>
+              <b>{zkBioImport.name || "Загрузите выгрузку «Сотрудник» из ZkBio"}</b>
+              <p>
+                Импорт обновляет только номер карты и статус уволен/работает.
+                Подразделения и графики из файла не переносятся.
+              </p>
+            </div>
+          </div>
+          {zkBioRows.length > 0 && (
+            <>
+              <div className="zkbioStats">
+                <span>
+                  <b>{zkBioRows.length}</b>
+                  строк в файле
+                </span>
+                <span>
+                  <b>{zkBioPreview.cardUpdates}</b>
+                  карт изменится
+                </span>
+                <span>
+                  <b>{zkBioPreview.deactivate}</b>
+                  будут уволены
+                </span>
+                <span>
+                  <b>{zkBioPreview.reactivate}</b>
+                  будут восстановлены
+                </span>
+                <span>
+                  <b>{zkBioPreview.newActive}</b>
+                  новых на настройку
+                </span>
+              </div>
+              <div className="zkbioPreview">
+                {zkBioRows
+                  .filter((row) => !rosterById.has(row.id) || row.active === false)
+                  .slice(0, 6)
+                  .map((row) => (
+                    <div className="adminRow" key={row.id}>
+                      <span className="avatar sm">{initialsFromName(row.name)}</span>
+                      <div>
+                        <b>{row.name}</b>
+                        <small>
+                          #{row.id} · карта {row.cardNumber || "не указана"} ·{" "}
+                          {row.active ? "новый сотрудник" : "уволен в ZkBio"}
+                        </small>
+                      </div>
+                      <span className="role">{row.active ? "Настроить" : "Пропуск"}</span>
+                    </div>
+                  ))}
+              </div>
+              {zkBioPreview.skippedNewDismissed > 0 && (
+                <div className="more">
+                  Новые уволенные из файла не будут добавлены:{" "}
+                  {zkBioPreview.skippedNewDismissed}
+                </div>
+              )}
+              {zkBioImport.report && (
+                <div className="success">
+                  Синхронизация выполнена: карт обновлено{" "}
+                  {zkBioImport.report.cardUpdates}, новых сотрудников{" "}
+                  {zkBioImport.report.insertedEmployees}, уволено{" "}
+                  {zkBioImport.report.deactivatedEmployees}, восстановлено{" "}
+                  {zkBioImport.report.reactivatedEmployees}.
+                </div>
+              )}
+              <button
+                className="primary"
+                disabled={zkBioImport.saving}
+                onClick={applyZkBioImport}
+              >
+                {zkBioImport.saving ? "Синхронизирую..." : "Применить синхронизацию"}
+              </button>
+            </>
+          )}
+          {zkBioImport.error && <div className="error">{zkBioImport.error}</div>}
         </div>
       </div>
     </>

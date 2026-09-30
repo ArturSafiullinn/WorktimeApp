@@ -574,6 +574,97 @@ app.put("/api/accounts/:login", requireRole("admin"), async (req, res) => {
     res.status(400).json({ error: e.message });
   }
 });
+app.post("/api/employees/zkbio-sync", requireRole("admin"), async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const sourceRows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    if (sourceRows.length > 5000)
+      return res.status(413).json({ error: "Слишком большой файл сотрудников" });
+    const rowsById = new Map();
+    for (const source of sourceRows) {
+      const id = Number(source?.id);
+      if (!Number.isInteger(id) || id <= 0) continue;
+      rowsById.set(id, {
+        id,
+        name: String(source?.name || `Сотрудник #${id}`).trim() || `Сотрудник #${id}`,
+        cardNumber: String(source?.cardNumber || "").trim() || null,
+        active: source?.active !== false,
+      });
+    }
+    const rows = [...rowsById.values()];
+    if (!rows.length) return res.status(400).json({ error: "В файле нет сотрудников" });
+
+    const report = {
+      rows: rows.length,
+      insertedEmployees: 0,
+      skippedNewDismissed: 0,
+      cardUpdates: 0,
+      deactivatedEmployees: 0,
+      reactivatedEmployees: 0,
+      unchangedEmployees: 0,
+    };
+    await client.query("BEGIN");
+    await client.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS dismissed_at DATE`);
+    const existing = await client.query(
+      `SELECT id,card_number,active FROM employees WHERE id=ANY($1::int[])`,
+      [rows.map((row) => row.id)],
+    );
+    const existingById = new Map(existing.rows.map((row) => [Number(row.id), row]));
+
+    for (const row of rows) {
+      const existingEmployee = existingById.get(row.id);
+      if (!existingEmployee) {
+        if (!row.active) {
+          report.skippedNewDismissed++;
+          continue;
+        }
+        await client.query(
+          `INSERT INTO employees(id,full_name,card_number,active,needs_review,review_note,updated_at)
+           VALUES($1,$2,$3,true,true,$4,now())`,
+          [
+            row.id,
+            row.name,
+            row.cardNumber,
+            "Новый сотрудник из ZkBio. Назначьте подразделение и постоянный график вручную.",
+          ],
+        );
+        report.insertedEmployees++;
+        continue;
+      }
+
+      const cardChanged = String(existingEmployee.card_number || "") !== String(row.cardNumber || "");
+      const activeChanged = Boolean(existingEmployee.active) !== row.active;
+      if (!cardChanged && !activeChanged) {
+        report.unchangedEmployees++;
+        continue;
+      }
+      await client.query(
+        `UPDATE employees
+         SET card_number=$2,
+             active=$3,
+             dismissed_at=CASE
+               WHEN $3::boolean=false THEN COALESCE(dismissed_at,CURRENT_DATE)
+               WHEN $3::boolean=true THEN NULL
+               ELSE dismissed_at
+             END,
+             updated_at=now()
+         WHERE id=$1`,
+        [row.id, row.cardNumber, row.active],
+      );
+      if (cardChanged) report.cardUpdates++;
+      if (activeChanged && row.active) report.reactivatedEmployees++;
+      if (activeChanged && !row.active) report.deactivatedEmployees++;
+    }
+
+    await client.query("COMMIT");
+    res.json({ ok: true, report });
+  } catch (e) {
+    await client.query("ROLLBACK");
+    res.status(400).json({ error: e.message });
+  } finally {
+    client.release();
+  }
+});
 app.delete("/api/accounts/:login", requireRole("admin"), async (req, res) => {
   try {
     const login = String(req.params.login || "").trim();
