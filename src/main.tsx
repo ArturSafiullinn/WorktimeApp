@@ -66,6 +66,7 @@ type Employee = {
   dismissedAt?: string;
   needsReview?: boolean;
   reviewNote?: string;
+  cardNumber?: string;
 };
 const base: Employee[] = [];
 type Account = {
@@ -241,6 +242,7 @@ const employeeFromApi = (e: any): Employee => ({
   dismissedAt: e.dismissed_at?.slice(0, 10),
   needsReview: e.needs_review,
   reviewNote: e.review_note,
+  cardNumber: e.card_number || "",
   entry: formatTime(e.entry || "—"),
   exit: formatTime(e.exit || "—"),
   fact: Number(e.fact) || 0,
@@ -4364,6 +4366,7 @@ function EmployeeDirectory({
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         full_name: selected.name,
+        card_number: selected.cardNumber || "",
         department_id: selected.departmentId,
         schedule_id: selected.scheduleId || null,
         effective_from: from,
@@ -4384,6 +4387,7 @@ function EmployeeDirectory({
     const updated = {
       ...selected,
       initials: initialsFromName(selected.name),
+      cardNumber: selected.cardNumber || "",
       department: department?.name || selected.department,
       schedule: schedule ? schedule.name : selected.schedule,
       needsReview: false,
@@ -4457,6 +4461,7 @@ function EmployeeDirectory({
       schedulePattern: schedule?.cycle_pattern,
       schedulePaidHours: schedule?.paid_hours,
       active: true,
+      cardNumber: draft.cardNumber.trim(),
     };
     setEmployees([...employees, created]);
     setSelected(created);
@@ -4707,6 +4712,20 @@ function EmployeeDirectory({
                       initials: initialsFromName(e.target.value),
                     })
                   }
+                />
+              </label>
+              <label>
+                Номер карты
+                <input
+                  type="text"
+                  value={selected.cardNumber || ""}
+                  onChange={(e) =>
+                    setSelected({
+                      ...selected,
+                      cardNumber: e.target.value,
+                    })
+                  }
+                  placeholder="Можно оставить пустым"
                 />
               </label>
               {selected.needsReview && (

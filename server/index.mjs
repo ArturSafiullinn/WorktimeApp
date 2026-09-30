@@ -706,7 +706,7 @@ app.patch("/api/employees/:id", requireRole("admin"), async (req, res) => {
   const client = await pool.connect();
   try {
     const id = Number(req.params.id),
-      { full_name, department_id, schedule_id, effective_from, active, dismissed_at, clear_review } =
+      { full_name, card_number, department_id, schedule_id, effective_from, active, dismissed_at, clear_review } =
         req.body;
     await client.query("BEGIN");
     await client.query(`ALTER TABLE employees ADD COLUMN IF NOT EXISTS dismissed_at DATE`);
@@ -716,6 +716,13 @@ app.patch("/api/employees/:id", requireRole("admin"), async (req, res) => {
       await client.query(
         `UPDATE employees SET full_name=$2,updated_at=now() WHERE id=$1`,
         [id, name],
+      );
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, "card_number")) {
+      const cardNumber = String(card_number || "").trim() || null;
+      await client.query(
+        `UPDATE employees SET card_number=$2,updated_at=now() WHERE id=$1`,
+        [id, cardNumber],
       );
     }
     if (department_id != null || active != null)
