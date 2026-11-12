@@ -1011,6 +1011,19 @@ app.post("/api/skud-days/import", requireRole("admin"), async (req, res) => {
     client.release();
   }
 });
+app.get("/api/payroll-adjustments", async (req, res) => {
+  try {
+    const month = String(req.query.month || new Date().toISOString().slice(0, 7));
+    if (!/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ error: "Некорректный месяц" });
+    await pool.query(`CREATE TABLE IF NOT EXISTS payroll_adjustments(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),pay_month DATE NOT NULL,source_month DATE NOT NULL,hours NUMERIC(8,2) NOT NULL,comment TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,pay_month,source_month))`);
+    const scope = bossEmployeeFilter(req.account, "e");
+    const { rows } = await pool.query(
+      `SELECT a.employee_id,a.hours::float hours,a.comment FROM payroll_adjustments a JOIN employees e ON e.id=a.employee_id WHERE a.pay_month=($1 || '-01')::date${scope.sql} ORDER BY a.id`,
+      [month, ...scope.params],
+    );
+    res.json(rows);
+  } catch (e) { safeError(res); }
+});
 app.get("/api/schedule-overrides", async (req, res) => {
   try {
     const month = String(req.query.month || new Date().toISOString().slice(0, 7));

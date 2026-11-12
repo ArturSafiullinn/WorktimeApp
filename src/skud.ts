@@ -199,7 +199,7 @@ const hasSalesDepartmentTolerance = (department: string) => {
 };
 const hasMetalworkingNoLunchException = (name: string, department: string) => {
   const d = department.toLowerCase().replace(/ё/g, "е");
-  return normalizedName(name).split(" ").includes("шувалов") && d.includes("металлообработ");
+  return normalizedName(name).split(" ").includes("шувалов") && /металло?обработ/.test(d);
 };
 const attendanceToleranceFor = (department: string) =>
   hasSalesDepartmentTolerance(department) ? 15 : SKUD_RULES.lateThresholdMin;

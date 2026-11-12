@@ -33,3 +33,5 @@ CREATE INDEX IF NOT EXISTS idx_password_reset_tokens_login ON password_reset_tok
 CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department_id);
 CREATE INDEX IF NOT EXISTS idx_employee_schedules_lookup ON employee_schedules(employee_id,effective_from,effective_to);
 CREATE INDEX IF NOT EXISTS idx_department_schedules_lookup ON department_schedules(department_id,effective_from,effective_to);
+
+CREATE TABLE IF NOT EXISTS payroll_adjustments(id BIGSERIAL PRIMARY KEY,employee_id INTEGER NOT NULL REFERENCES employees(id),pay_month DATE NOT NULL,source_month DATE NOT NULL,hours NUMERIC(8,2) NOT NULL,comment TEXT NOT NULL,created_at TIMESTAMPTZ NOT NULL DEFAULT now(),UNIQUE(employee_id,pay_month,source_month));

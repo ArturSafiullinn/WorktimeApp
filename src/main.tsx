@@ -398,7 +398,7 @@ const hasHusainovOzonException = (name?: string) =>
   normalizedEmployeeName(name).split(" ").includes("хусаинов");
 const hasMetalworkingNoLunchException = (employee: Pick<Employee, "name" | "department">) =>
   normalizedEmployeeName(employee.name).split(" ").includes("шувалов") &&
-  normalizedEmployeeName(employee.department).includes("металлообработ");
+  /металло?обработ/.test(normalizedEmployeeName(employee.department));
 const isLegacyDismissedArchiveEmployee = (employee: Employee) =>
   employee.active === false &&
   !employee.dismissedAt &&
@@ -1498,7 +1498,7 @@ const isRegularSchedule = (e: Employee) =>
 const lunchHoursFor = (e: Employee, rawHours: number, noLunch = false) =>
   !noLunch && !hasMetalworkingNoLunchException(e) && isRegularSchedule(e) && rawHours >= 5 ? 1 : 0;
 const plannedPaidHoursFor = (e: Employee) =>
-  e.scheduleCode === "foundry_2x2"
+  (hasMetalworkingNoLunchException(e) || e.scheduleCode === "foundry_2x2")
     ? null
     : e.schedulePaidHours || (isRegularSchedule(e) ? 8 : null);
 const payableManualHours = (
@@ -1565,13 +1565,13 @@ const payableFactHours = (e: Employee) => {
   const fact = Number(e.fact) || 0;
   const plannedHours = plannedPaidHoursFor(e);
   if (!fact) return fact;
+  if (hasMetalworkingNoLunchException(e) && e.entry !== "—" && e.exit !== "—")
+    return payableManualHours(e, e.entry, e.exit, 0, undefined, undefined, true);
   if (!isRegularSchedule(e) || e.entry === "—" || e.exit === "—")
     return plannedHours == null ? fact : Math.min(fact, plannedHours);
   if (hasCompensatedEarlyLeave(e)) return plannedPaidHoursFor(e) || fact;
   if (hasHusainovOzonException(e.name) && hasSalesDepartmentAcceptedAttendance(e))
     return plannedPaidHoursFor(e) || fact;
-  if (hasMetalworkingNoLunchException(e))
-    return payableManualHours(e, e.entry, e.exit, 0, undefined, undefined, true);
   return Math.min(fact, payableManualHours(e, e.entry, e.exit));
 };
 const suggestedOvertimeHours = (
@@ -1887,6 +1887,20 @@ function Timesheet({
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("all");
   const [overrides, setOverrides] = useState<WorkOverride[]>([]);
+  const [adjustmentsMonth, setAdjustmentsMonth] = useState("");
+  const [payAdjustments, setPayAdjustments] = useState<{employee_id: number; hours: number; comment: string}[]>([]);
+  useEffect(() => {
+    let active = true;
+    setPayAdjustments([]);
+    setAdjustmentsMonth("");
+    fetch(`/api/payroll-adjustments?month=${selectedMonth}`)
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error("Не удалось загрузить доплаты")))
+      .then((rows) => { if (active) { setPayAdjustments(rows); setAdjustmentsMonth(selectedMonth); } })
+      .catch(() => { if (active) alert("Не удалось загрузить доплаты. Обновите табель перед расчётом оплаты."); });
+    return () => { active = false; };
+  }, [selectedMonth]);
+  const adjustmentHours = (id: number) => payAdjustments.filter((row) => row.employee_id === id).reduce((sum, row) => sum + Number(row.hours), 0);
+  const adjustmentNote = (id: number) => payAdjustments.filter((row) => row.employee_id === id).map((row) => `${row.comment}: +${row.hours} ч`).join("; ");
   const [opened, setOpened] = useState<{
     employee: Employee;
     cell: TimesheetCell;
@@ -1949,7 +1963,7 @@ function Timesheet({
     }))
     .filter((g) => g.rows.length);
   const monthTotal = (e: Employee) =>
-    monthDays.reduce(
+    adjustmentHours(e.id) + monthDays.reduce(
       (sum, d) =>
         sum +
         cellFor(
@@ -1993,8 +2007,8 @@ function Timesheet({
             skudReadyThrough,
           ),
         );
-          const total = cells.reduce((sum, cell) => sum + cell.hours, 0);
-          return `<tr><th>${escapeHtml(employee.name)}</th>${cells
+          const total = cells.reduce((sum, cell) => sum + cell.hours, 0) + adjustmentHours(employee.id);
+          return `<tr><th>${escapeHtml(employee.name)}${adjustmentHours(employee.id) ? `<br><small>${escapeHtml(adjustmentNote(employee.id))}</small>` : ""}</th>${cells
             .map((cell) => `<td>${hoursText(cell.hours)}</td>`)
             .join("")}<td class="total">${hoursText(total)}</td></tr>`;
         });
@@ -2115,7 +2129,7 @@ function Timesheet({
             </option>
           ))}
         </select>
-        <button className="outline" onClick={exportTimesheet}>
+        <button className="outline" onClick={exportTimesheet} disabled={adjustmentsMonth !== selectedMonth}>
           <Printer />
           Печать
         </button>
@@ -2221,7 +2235,7 @@ function Timesheet({
                       </button>
                     );
                   })}
-                  <div className="totalCol">{fmt(monthTotal(e))}</div>
+                  <div className="totalCol" title={adjustmentNote(e.id)}>{fmt(monthTotal(e))}{adjustmentHours(e.id) > 0 && <small style={{display: "block", fontSize: 10}}>{adjustmentNote(e.id)}</small>}</div>
                 </div>
               ))}
             </div>
@@ -6351,7 +6365,7 @@ const personalExceptions = [
     rule:
       "Для сотрудника Шувалова в подразделении металлообработки обед не вычитается.",
     effect:
-      "Отработанное время считается как непрерывный интервал вход–выход.",
+      "Почасовая оплата: весь интервал вход–выход без вычета обеда и ограничения восемью часами.",
   },
 ];
 const generalExceptions = [
